@@ -1,0 +1,8 @@
+build/
+.cache/
+*.o
+*.a
+*.so
+*.ppm
+compile_commands.json
+.DS_Store
