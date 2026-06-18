@@ -9,6 +9,9 @@ struct TouchEvent {
     int         x;
     int         y;
     TouchAction action;
+    void*       handler;
+    int         handlerSX;
+    int         handlerSY;
 };
 
 enum class KeyAction : uint8_t { DOWN = 0, UP = 1 };
@@ -38,6 +41,13 @@ enum class EventType : uint8_t {
 
 struct Event {
     EventType type;
+
+    Event() : type(EventType::NONE) {
+        touch.handler   = nullptr;
+        touch.handlerSX = 0;
+        touch.handlerSY = 0;
+    }
+
     union {
         TouchEvent touch;
         KeyEvent   key;

@@ -28,13 +28,39 @@ public:
     }
 
     bool dispatchTouchEvent(TouchEvent& ev) {
-        if (mRootView) return mRootView->dispatchTouchEvent(ev, 0, 0);
+        if (ev.action == TouchAction::DOWN) {
+            ev.handler   = nullptr;
+            ev.handlerSX = 0;
+            ev.handlerSY = 0;
+            if (mRootView && mRootView->dispatchTouchEvent(ev, 0, 0)) {
+                if (ev.handler) {
+                    mTouchTarget.view    = (View*)ev.handler;
+                    mTouchTarget.screenX = ev.handlerSX;
+                    mTouchTarget.screenY = ev.handlerSY;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // MOVE or UP — dispatch to captured target
+        if (mTouchTarget.view) {
+            bool handled = mTouchTarget.view->dispatchTouchEvent(
+                ev, mTouchTarget.screenX, mTouchTarget.screenY);
+            if (ev.action == TouchAction::UP) {
+                mTouchTarget.view = nullptr;
+            }
+            return handled;
+        }
         return false;
     }
 
 private:
-    ViewGroup* mRootView  = nullptr;
-    DirtyList* mDirtyList = nullptr;
+    struct TouchTarget { View* view = nullptr; int screenX = 0; int screenY = 0; };
+
+    ViewGroup* mRootView    = nullptr;
+    DirtyList* mDirtyList   = nullptr;
+    TouchTarget mTouchTarget;
 };
 
 } // namespace litho

@@ -10,6 +10,9 @@
 #include "framework/activity/activity.hpp"
 #include "framework/activity/activity_manager.hpp"
 #include "framework/intent/intent.hpp"
+#include "framework/widget/button.hpp"
+#include "framework/widget/text_view.hpp"
+#include "framework/widget/image_view.hpp"
 
 #include "port/display_adapter.hpp"
 #include "port/input_adapter.hpp"
@@ -29,59 +32,18 @@
 
 using namespace litho;
 
-// -------- touch-aware rect view --------
+// -------- simple color background (no touch) --------
 
-class RectView : public View {
+class ColorView : public View {
 public:
-    RectView(RGB565 color, int w, int h)
-        : mColor(color), mPressedColor(color) {
-        // darken for pressed state
-        uint8_t r = (color.value >> 11) & 0x1F;
-        uint8_t g = (color.value >> 5)  & 0x3F;
-        uint8_t b =  color.value        & 0x1F;
-        mPressedColor = RGB565::fromRGB(r * 128 / 31, g * 64 / 63, b * 128 / 31);
-    }
+    explicit ColorView(RGB565 color) : mColor(color) {}
 
     void onDraw(Painter& p) override {
-        RGB565 c = mPressed ? mPressedColor : mColor;
-        p.fillRect(0, 0, mBounds.width, mBounds.height, c);
-        if (mDrawCount == 0) {
-            printf( "DRAW %p: (%d,%d,%d,%d) c=%04x\n",
-                   (void*)this, mBounds.x, mBounds.y,
-                   mBounds.width, mBounds.height, c.value);
-        }
-        mDrawCount++;
+        p.fillRect(0, 0, mBounds.width, mBounds.height, mColor);
     }
-
-    bool onTouchEvent(TouchEvent& ev) override {
-        if (ev.action == TouchAction::DOWN) {
-            if (!mPressed) {
-                mPressed = true;
-                invalidate();
-            }
-            return true;
-        }
-        if (ev.action == TouchAction::UP) {
-            if (mPressed) {
-                mPressed = false;
-                invalidate();
-                if (mCallback) mCallback(mUser);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    int mDrawCount = 0;
-
-    void setOnClick(void (*cb)(void*), void* user) { mCallback = cb; mUser = user; }
 
 private:
     RGB565 mColor;
-    RGB565 mPressedColor;
-    bool   mPressed  = false;
-    void (*mCallback)(void*) = nullptr;
-    void* mUser = nullptr;
 };
 
 // -------- MainActivity (green) --------
@@ -96,11 +58,11 @@ public:
         root->bounds() = {0, 0, 640, 480};
         setContentView(root);
 
-        auto* bg = new RectView(RGB565::Green(), 640, 480);
+        auto* bg = new ColorView(RGB565::Green());
         bg->bounds() = {0, 0, 640, 480};
         root->addView(bg);
 
-        auto* btn = new RectView(RGB565::Red(), 120, 48);
+        auto* btn = new Button(RGB565::Red(), 120, 48);
         btn->bounds() = {260, 216, 120, 48};
         btn->setOnClick([](void* self) {
             auto* a = (MainActivity*)self;
@@ -110,6 +72,15 @@ public:
             a->startActivity(intent);
         }, this);
         root->addView(btn);
+
+        // Placeholder widgets
+        auto* label = new TextView(120, 24);
+        label->bounds() = {260, 180, 120, 24};
+        root->addView(label);
+
+        auto* icon = new ImageView(48, 48);
+        icon->bounds() = {296, 300, 48, 48};
+        root->addView(icon);
     }
 };
 
@@ -125,16 +96,20 @@ public:
         root->bounds() = {0, 0, 640, 480};
         setContentView(root);
 
-        auto* bg = new RectView(RGB565::Blue(), 640, 480);
+        auto* bg = new ColorView(RGB565::Blue());
         bg->bounds() = {0, 0, 640, 480};
         root->addView(bg);
 
-        auto* btn = new RectView(RGB565::Red(), 120, 48);
+        auto* btn = new Button(RGB565::Red(), 120, 48);
         btn->bounds() = {260, 216, 120, 48};
         btn->setOnClick([](void* self) {
             ((SecondActivity*)self)->finish();
         }, this);
         root->addView(btn);
+
+        auto* label = new TextView(120, 24);
+        label->bounds() = {260, 180, 120, 24};
+        root->addView(label);
     }
 };
 
@@ -166,7 +141,7 @@ int main() {
 #endif
 
     WindowManager wm(display, input, tick);
-    wm.initPFB(128, 4, 4);
+    wm.initPFB(128, 4, 2);
 
     ActivityManager am(wm);
 

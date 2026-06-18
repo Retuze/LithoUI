@@ -64,11 +64,26 @@ public:
             if (ev.x >= cx && ev.x < cx + child->bounds().width &&
                 ev.y >= cy && ev.y < cy + child->bounds().height) {
 
-                if (child->dispatchTouchEvent(ev, cx, cy)) return true;
+                if (child->dispatchTouchEvent(ev, cx, cy)) {
+                    if (!ev.handler) {
+                        ev.handler   = child;
+                        ev.handlerSX = cx;
+                        ev.handlerSY = cy;
+                    }
+                    return true;
+                }
             }
         }
 
-        return onTouchEvent(ev);
+        if (onTouchEvent(ev)) {
+            if (!ev.handler) {
+                ev.handler   = this;
+                ev.handlerSX = screenX;
+                ev.handlerSY = screenY;
+            }
+            return true;
+        }
+        return false;
     }
 
     void propagateDirtyList(DirtyList* dl) {

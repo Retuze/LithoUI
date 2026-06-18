@@ -23,7 +23,13 @@ void View::invalidate() {
 
 bool View::dispatchTouchEvent(TouchEvent& ev, int screenX, int screenY) {
     (void)screenX; (void)screenY;
-    return onTouchEvent(ev);
+    if (onTouchEvent(ev)) {
+        ev.handler   = this;
+        ev.handlerSX = screenX;
+        ev.handlerSY = screenY;
+        return true;
+    }
+    return false;
 }
 
 } // namespace litho
