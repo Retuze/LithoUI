@@ -8,11 +8,12 @@
 namespace litho {
 
 class ViewGroup;
+class ViewPropertyAnimator;
 
 class View : public Object {
 public:
     View()  = default;
-    ~View() override = default;
+    ~View() override;
 
     Region&       bounds()       { return mBounds; }
     const Region& bounds() const { return mBounds; }
@@ -21,6 +22,17 @@ public:
     int  y()      const { return mBounds.y; }
     int  width()  const { return mBounds.width; }
     int  height() const { return mBounds.height; }
+
+    // Animated visual properties
+    int16_t translationX() const { return mTranslationX; }
+    int16_t translationY() const { return mTranslationY; }
+    uint8_t alpha()        const { return mAlpha; }
+
+    void setTranslationX(int16_t tx) { mTranslationX = tx; invalidate(); }
+    void setTranslationY(int16_t ty) { mTranslationY = ty; invalidate(); }
+    void setAlpha(uint8_t a)         { mAlpha = a;        invalidate(); }
+
+    ViewPropertyAnimator& animate();
 
     ViewGroup* parent()    const { return mParent; }
     bool       visible()   const { return bVisible; }
@@ -40,10 +52,27 @@ public:
 protected:
     friend class ViewGroup;
 
-    Region     mBounds;
-    bool       bVisible    = true;
-    ViewGroup* mParent     = nullptr;
-    DirtyList* mDirtyList  = nullptr;
+    Region       mBounds;
+    bool         bVisible       = true;
+    int16_t      mTranslationX  = 0;
+    int16_t      mTranslationY  = 0;
+    uint8_t      mAlpha         = 255;
+    ViewGroup*   mParent        = nullptr;
+    DirtyList*   mDirtyList     = nullptr;
+
+private:
+    ViewPropertyAnimator* mAnimator = nullptr;
 };
+
+// View property setters for ObjectAnimator
+inline void viewSetTranslationX(void* target, float val) {
+    ((View*)target)->setTranslationX((int16_t)val);
+}
+inline void viewSetTranslationY(void* target, float val) {
+    ((View*)target)->setTranslationY((int16_t)val);
+}
+inline void viewSetAlpha(void* target, float val) {
+    ((View*)target)->setAlpha((uint8_t)val);
+}
 
 } // namespace litho

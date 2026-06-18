@@ -43,9 +43,13 @@ public:
 
             if (!p.intersectsClip(cx, cy, cr, cb)) continue;
 
+            int tx = cx + child->translationX();
+            int ty = cy + child->translationY();
+
             Painter cp = p;
-            cp.setScreenOrigin(cx, cy);
+            cp.setScreenOrigin(tx, ty);
             cp.setScreenClip(cx, cy, cr, cb);
+            cp.setAlpha((uint8_t)((uint32_t)p.alpha() * child->alpha() / 255));
             child->onDraw(cp);
         }
     }

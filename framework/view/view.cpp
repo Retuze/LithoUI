@@ -1,7 +1,12 @@
 #include "framework/view/view.hpp"
 #include "framework/view/view_group.hpp"
+#include "framework/animation/view_property_animator.hpp"
 
 namespace litho {
+
+View::~View() {
+    delete mAnimator;
+}
 
 void View::invalidate() {
     if (!mDirtyList) return;
@@ -30,6 +35,15 @@ bool View::dispatchTouchEvent(TouchEvent& ev, int screenX, int screenY) {
         return true;
     }
     return false;
+}
+
+ViewPropertyAnimator& View::animate() {
+    if (mAnimator) {
+        delete mAnimator;
+        mAnimator = nullptr;
+    }
+    mAnimator = new ViewPropertyAnimator(this);
+    return *mAnimator;
 }
 
 } // namespace litho

@@ -45,14 +45,14 @@ public:
             return;
         }
 
-        // Pause current
+        // 1. Pause current
         if (mCount > 0) {
             mStack[mCount - 1]->onPause();
-            mStack[mCount - 1]->onStop();
         }
 
         assert(mCount < kMaxStack && "activity stack overflow");
 
+        // 2-4. Create, start, resume new
         Activity* a = factory();
         a->setManager(this);
 
@@ -64,6 +64,11 @@ public:
         a->onResume();
 
         mStack[mCount++] = a;
+
+        // 5. Stop previous — now hidden behind the new activity
+        if (mCount > 1) {
+            mStack[mCount - 2]->onStop();
+        }
 
         win->invalidateRect({0, 0,
             (int16_t)mWindowManager.displayWidth(),
@@ -77,7 +82,21 @@ public:
         }
         if (idx < 0) return;
 
+        bool isTop = (idx == mCount - 1);
+
+        // 1. Pause
         a->onPause();
+
+        // 2-3. If finishing top activity, resume the one below it
+        if (isTop && mCount > 1) {
+            mStack[mCount - 2]->onStart();
+            mStack[mCount - 2]->onResume();
+            mStack[mCount - 2]->mWindow->invalidateRect({0, 0,
+                (int16_t)mWindowManager.displayWidth(),
+                (int16_t)mWindowManager.displayHeight()});
+        }
+
+        // 4-5. Stop + destroy
         a->onStop();
         a->onDestroy();
 
@@ -87,14 +106,6 @@ public:
         for (int i = idx; i < mCount - 1; i++) mStack[i] = mStack[i + 1];
         mCount--;
         delete a;
-
-        if (mCount > 0) {
-            mStack[mCount - 1]->onStart();
-            mStack[mCount - 1]->onResume();
-            mStack[mCount - 1]->mWindow->invalidateRect({0, 0,
-                (int16_t)mWindowManager.displayWidth(),
-                (int16_t)mWindowManager.displayHeight()});
-        }
     }
 
     Activity* currentActivity() {

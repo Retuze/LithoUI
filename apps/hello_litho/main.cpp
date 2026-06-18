@@ -13,6 +13,8 @@
 #include "framework/widget/button.hpp"
 #include "framework/widget/text_view.hpp"
 #include "framework/widget/image_view.hpp"
+#include "framework/animation/view_property_animator.hpp"
+#include "framework/animation/animation_manager.hpp"
 
 #include "port/display_adapter.hpp"
 #include "port/input_adapter.hpp"
@@ -62,18 +64,17 @@ public:
         bg->bounds() = {0, 0, 640, 480};
         root->addView(bg);
 
-        auto* btn = new Button(RGB565::Red(), 120, 48);
-        btn->bounds() = {260, 216, 120, 48};
-        btn->setOnClick([](void* self) {
+        mBtn = new Button(RGB565::Red(), 120, 48);
+        mBtn->bounds() = {260, 216, 120, 48};
+        mBtn->setOnClick([](void* self) {
             auto* a = (MainActivity*)self;
             Intent intent;
             intent.target = "SecondActivity";
             intent.putInt("from", 1);
             a->startActivity(intent);
         }, this);
-        root->addView(btn);
+        root->addView(mBtn);
 
-        // Placeholder widgets
         auto* label = new TextView(120, 24);
         label->bounds() = {260, 180, 120, 24};
         root->addView(label);
@@ -81,7 +82,47 @@ public:
         auto* icon = new ImageView(48, 48);
         icon->bounds() = {296, 300, 48, 48};
         root->addView(icon);
+        mIcon = icon;
+
+        auto* animBtn = new Button(RGB565::fromRGB(160, 160, 160), 80, 32);
+        animBtn->bounds() = {280, 368, 80, 32};
+        animBtn->setOnClick([](void* self) {
+            auto* a = (MainActivity*)self;
+            auto& mgr = a->manager().windowManager().animationManager();
+            if (!a->mIconMoved) {
+                a->mIcon->animate()
+                    .translationY(-30)
+                    .alpha(80)
+                    .setDuration(350)
+                    .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
+                    .start(mgr);
+            } else {
+                a->mIcon->animate()
+                    .translationY(0)
+                    .alpha(255)
+                    .setDuration(350)
+                    .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
+                    .start(mgr);
+            }
+            a->mIconMoved = !a->mIconMoved;
+        }, this);
+        root->addView(animBtn);
     }
+
+    void onResume() override {
+        Activity::onResume();
+        mBtn->setTranslationX(120);  // reset offscreen before slide-in
+        mBtn->animate()
+            .translationX(0)
+            .setDuration(400)
+            .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
+            .start(manager().windowManager().animationManager());
+    }
+
+private:
+    Button*    mBtn       = nullptr;
+    ImageView* mIcon      = nullptr;
+    bool       mIconMoved = false;
 };
 
 // -------- SecondActivity (blue) --------

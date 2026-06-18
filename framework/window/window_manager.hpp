@@ -2,6 +2,7 @@
 #include "window.hpp"
 #include "core/pfb.hpp"
 #include "core/dirty_list.hpp"
+#include "framework/animation/animation_manager.hpp"
 #include "port/display_adapter.hpp"
 #include "port/input_adapter.hpp"
 #include "port/tick_adapter.hpp"
@@ -53,6 +54,10 @@ public:
             }
         }
 
+        // Advance animations each frame (absolute time)
+        uint32_t frameTimeMs = mTick.tickMs();
+        mAnimMgr.tick(frameTimeMs);
+
         // Render each dirty region through PFB
         for (int ri = 0; ri < mDirtyList.count(); ri++) {
             const Region& r = mDirtyList.regions()[ri];
@@ -80,6 +85,8 @@ public:
 
     void quit() { mRunning = false; }
 
+    AnimationManager& animationManager() { return mAnimMgr; }
+
     int displayWidth()  const { return mDisplay.width(); }
     int displayHeight() const { return mDisplay.height(); }
 
@@ -88,6 +95,7 @@ private:
     InputAdapter&   mInput;
     TickAdapter&    mTick;
     PFB             mPFB;
+    AnimationManager mAnimMgr;
     DirtyList       mDirtyList;
 
     Window*   mWindows[4] = {};

@@ -11,7 +11,6 @@ public:
         mTile     = &tile;
         mTileOrgX = tileOrgX;
         mTileOrgY = tileOrgY;
-        // reset clip to "unbounded" for the new tile
         mClipL = -32768; mClipT = -32768;
         mClipR =  32767; mClipB =  32767;
     }
@@ -20,12 +19,14 @@ public:
     int  screenX() const { return mScreenX; }
     int  screenY() const { return mScreenY; }
 
+    void setAlpha(uint8_t a) { mAlpha = a; }
+    uint8_t alpha() const { return mAlpha; }
+
     bool intersectsClip(int left, int top, int right, int bottom) const {
         return left < mClipR && right > mClipL &&
                top  < mClipB && bottom > mClipT;
     }
 
-    // Clip in screen coords. Intersects with existing clip — tightens down the tree.
     void setScreenClip(int left, int top, int right, int bottom) {
         if (left   > mClipL) mClipL = left;
         if (top    > mClipT) mClipT = top;
@@ -33,7 +34,6 @@ public:
         if (bottom < mClipB) mClipB = bottom;
     }
 
-    // Fill in local coords → screen → clip → tile.
     void fillRect(int x, int y, int w, int h, RGB565 c) {
         int sx0 = x + mScreenX;
         int sy0 = y + mScreenY;
@@ -57,15 +57,34 @@ public:
         if (ty1 > mTile->height()) ty1 = mTile->height();
 
         uint16_t* row = mTile->buffer() + ty0 * mTile->stride();
-        for (int ty = ty0; ty < ty1; ty++) {
-            for (int tx = tx0; tx < tx1; tx++) {
-                row[tx] = c.value;
+
+        if (mAlpha == 255) {
+            for (int ty = ty0; ty < ty1; ty++) {
+                for (int tx = tx0; tx < tx1; tx++) {
+                    row[tx] = c.value;
+                }
+                row += mTile->stride();
             }
-            row += mTile->stride();
+        } else {
+            uint32_t a  = mAlpha;
+            uint32_t ia = 255 - a;
+            uint32_t sr = ((c.value >> 11) & 0x1F) * a;
+            uint32_t sg = ((c.value >> 5)  & 0x3F) * a;
+            uint32_t sb = ( c.value        & 0x1F) * a;
+
+            for (int ty = ty0; ty < ty1; ty++) {
+                for (int tx = tx0; tx < tx1; tx++) {
+                    uint16_t d = row[tx];
+                    uint16_t r = (uint16_t)((sr + ((d >> 11) & 0x1F) * ia) / 255) << 11;
+                    uint16_t g = (uint16_t)((sg + ((d >> 5)  & 0x3F) * ia) / 255) << 5;
+                    uint16_t b = (uint16_t)((sb + ( d        & 0x1F) * ia) / 255);
+                    row[tx] = r | g | b;
+                }
+                row += mTile->stride();
+            }
         }
     }
 
-    // Copy src tile at local (dx, dy). Clipped the same way as fillRect.
     void copyTile(const Tile& src, int dx, int dy) {
         int sx0 = dx + mScreenX;
         int sy0 = dy + mScreenY;
@@ -91,29 +110,45 @@ public:
         if (ty0 + copyH > mTile->height()) copyH = mTile->height() - ty0;
         if (copyW <= 0 || copyH <= 0) return;
 
-        // source pixel (0,0) maps to screen (dx+mScreenX, dy+mScreenY).
-        // After clipping, the first drawn screen pixel is (sx0, sy0),
-        // which corresponds to source pixel (sx0 - dx - mScreenX, sy0 - dy - mScreenY).
         int srcOffX = sx0 - dx - mScreenX;
         int srcOffY = sy0 - dy - mScreenY;
 
-        for (int y = 0; y < copyH; y++) {
-            uint16_t*       dstRow = mTile->buffer() + (ty0 + y) * mTile->stride() + tx0;
-            const uint16_t* srcRow = src.buffer() + (srcOffY + y) * src.stride() + srcOffX;
-            memcpy(dstRow, srcRow, copyW * sizeof(uint16_t));
+        if (mAlpha == 255) {
+            for (int y = 0; y < copyH; y++) {
+                uint16_t*       dstRow = mTile->buffer() + (ty0 + y) * mTile->stride() + tx0;
+                const uint16_t* srcRow = src.buffer() + (srcOffY + y) * src.stride() + srcOffX;
+                memcpy(dstRow, srcRow, copyW * sizeof(uint16_t));
+            }
+        } else {
+            uint32_t a  = mAlpha;
+            uint32_t ia = 255 - a;
+
+            for (int y = 0; y < copyH; y++) {
+                uint16_t*       dstRow = mTile->buffer() + (ty0 + y) * mTile->stride() + tx0;
+                const uint16_t* srcRow = src.buffer() + (srcOffY + y) * src.stride() + srcOffX;
+                for (int x = 0; x < copyW; x++) {
+                    uint16_t s = srcRow[x];
+                    uint16_t d = dstRow[x];
+                    uint16_t r = (uint16_t)((((s >> 11) & 0x1F) * a + ((d >> 11) & 0x1F) * ia) / 255) << 11;
+                    uint16_t g = (uint16_t)((((s >> 5)  & 0x3F) * a + ((d >> 5)  & 0x3F) * ia) / 255) << 5;
+                    uint16_t b = (uint16_t)((( s        & 0x1F) * a + ( d        & 0x1F) * ia) / 255);
+                    dstRow[x] = r | g | b;
+                }
+            }
         }
     }
 
 private:
-    Tile* mTile     = nullptr;
-    int   mTileOrgX = 0;
-    int   mTileOrgY = 0;
-    int   mScreenX  = 0;
-    int   mScreenY  = 0;
-    int   mClipL    = -32768;
-    int   mClipT    = -32768;
-    int   mClipR    = 32767;
-    int   mClipB    = 32767;
+    Tile*   mTile     = nullptr;
+    int     mTileOrgX = 0;
+    int     mTileOrgY = 0;
+    int     mScreenX  = 0;
+    int     mScreenY  = 0;
+    int     mClipL    = -32768;
+    int     mClipT    = -32768;
+    int     mClipR    = 32767;
+    int     mClipB    = 32767;
+    uint8_t mAlpha    = 255;
 };
 
 } // namespace litho
