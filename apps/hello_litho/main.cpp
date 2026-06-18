@@ -15,6 +15,7 @@
 #include "framework/widget/image_view.hpp"
 #include "framework/animation/view_property_animator.hpp"
 #include "framework/animation/animation_manager.hpp"
+#include "generated/res_bundle.h"
 
 #include "port/display_adapter.hpp"
 #include "port/input_adapter.hpp"
@@ -31,152 +32,179 @@
 #endif
 
 #include <cstdio>
+#include <cstring>
 
 using namespace litho;
 
-// -------- simple color background (no touch) --------
+static const int kCols = 5;
+static const int kRows = 5;
+static const int kCellW = 128;
+static const int kCellH = 96;
+
+// -------- simple color background --------
 
 class ColorView : public View {
 public:
     explicit ColorView(RGB565 color) : mColor(color) {}
-
     void onDraw(Painter& p) override {
         p.fillRect(0, 0, mBounds.width, mBounds.height, mColor);
     }
-
 private:
     RGB565 mColor;
 };
 
-// -------- MainActivity (green) --------
+// -------- GalleryActivity: icon grid --------
 
-class MainActivity : public Activity {
+class IconGrid : public ViewGroup {
+public:
+    void setOnIconClick(void (*cb)(void*, int), void* user) { mCb = cb; mUser = user; }
+
+    bool onTouchEvent(TouchEvent& ev) override {
+        if (ev.action == TouchAction::UP && mCb) {
+            int col = ev.x / kCellW;
+            int row = ev.y / kCellH;
+            int idx = row * kCols + col;
+            if (idx >= 0 && idx < kImageAssetCount) mCb(mUser, idx);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    void (*mCb)(void*, int) = nullptr;
+    void* mUser = nullptr;
+};
+
+class GalleryActivity : public Activity {
 public:
     void onCreate(Bundle& state) override {
         (void)state;
-        printf("MainActivity::onCreate\n");
+        printf("GalleryActivity::onCreate\n");
+
+        auto* root = new IconGrid();
+        root->bounds() = {0, 0, 640, 480};
+        root->setOnIconClick([](void* self, int idx) {
+            auto* a = (GalleryActivity*)self;
+            Intent intent;
+            intent.target = "DetailActivity";
+            intent.putInt("index", idx);
+            a->startActivity(intent);
+        }, this);
+        setContentView(root);
+
+        auto* bg = new ColorView(RGB565::fromRGB(32, 32, 48));
+        bg->bounds() = {0, 0, 640, 480};
+        root->addView(bg);
+
+        int count = kImageAssetCount;
+        if (count > kCols * kRows) count = kCols * kRows;
+
+        for (int i = 0; i < count; i++) {
+            int col = i % kCols;
+            int row = i / kCols;
+            int cx = col * kCellW + 14;
+            int cy = row * kCellH;
+
+            auto* icon = new ImageView(100, 100);
+            icon->bounds() = {(int16_t)cx, (int16_t)cy, 100, 100};
+            icon->setImage(&kImageAssets[i]);
+            root->addView(icon);
+        }
+    }
+};
+
+// -------- DetailActivity: single icon large --------
+
+class DetailActivity : public Activity {
+public:
+    void onCreate(Bundle& state) override {
+        mIndex = state.getInt("index", 0);
+        printf("DetailActivity::onCreate idx=%d (%s)\n", mIndex,
+               mIndex < kImageAssetCount ? kImageAssets[mIndex].name : "?");
 
         auto* root = new ViewGroup();
         root->bounds() = {0, 0, 640, 480};
         setContentView(root);
 
-        auto* bg = new ColorView(RGB565::Green());
+        auto* bg = new ColorView(RGB565::fromRGB(32, 32, 48));
         bg->bounds() = {0, 0, 640, 480};
         root->addView(bg);
 
-        mBtn = new Button(RGB565::Red(), 120, 48);
-        mBtn->bounds() = {260, 216, 120, 48};
-        mBtn->setOnClick([](void* self) {
-            auto* a = (MainActivity*)self;
-            Intent intent;
-            intent.target = "SecondActivity";
-            intent.putInt("from", 1);
-            a->startActivity(intent);
-        }, this);
-        root->addView(mBtn);
+        // Icon centered
+        if (mIndex < kImageAssetCount) {
+            auto* icon = new ImageView(100, 100);
+            icon->bounds() = {270, 120, 100, 100};
+            icon->setImage(&kImageAssets[mIndex]);
 
-        auto* label = new TextView(120, 24);
-        label->bounds() = {260, 180, 120, 24};
+            // Slide in from below
+            icon->setTranslationY(80);
+            root->addView(icon);
+            mIcon = icon;
+        }
+
+        // Name label
+        auto* label = new TextView(200, 28);
+        label->bounds() = {220, 240, 200, 28};
         root->addView(label);
+        mLabel = label;
 
-        auto* icon = new ImageView(48, 48);
-        icon->bounds() = {296, 300, 48, 48};
-        root->addView(icon);
-        mIcon = icon;
-
-        auto* animBtn = new Button(RGB565::fromRGB(160, 160, 160), 80, 32);
-        animBtn->bounds() = {280, 368, 80, 32};
-        animBtn->setOnClick([](void* self) {
-            auto* a = (MainActivity*)self;
-            auto& mgr = a->manager().windowManager().animationManager();
-            if (!a->mIconMoved) {
-                a->mIcon->animate()
-                    .translationY(-30)
-                    .alpha(80)
-                    .setDuration(350)
-                    .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
-                    .start(mgr);
-            } else {
-                a->mIcon->animate()
-                    .translationY(0)
-                    .alpha(255)
-                    .setDuration(350)
-                    .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
-                    .start(mgr);
-            }
-            a->mIconMoved = !a->mIconMoved;
+        // Back button
+        auto* backBtn = new Button(RGB565::fromRGB(200, 80, 80), 120, 40);
+        backBtn->bounds() = {260, 380, 120, 40};
+        backBtn->setOnClick([](void* self) {
+            ((DetailActivity*)self)->finish();
         }, this);
-        root->addView(animBtn);
+        backBtn->setTranslationY(60);
+        root->addView(backBtn);
+        mBackBtn = backBtn;
     }
 
     void onResume() override {
         Activity::onResume();
-        mBtn->setTranslationX(120);  // reset offscreen before slide-in
-        mBtn->animate()
-            .translationX(0)
-            .setDuration(400)
-            .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
-            .start(manager().windowManager().animationManager());
+        if (mIcon) {
+            mIcon->setTranslationY(80);
+            mIcon->animate()
+                .translationY(0)
+                .setDuration(300)
+                .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
+                .start(manager().windowManager().animationManager());
+        }
+        if (mBackBtn) {
+            mBackBtn->setTranslationY(60);
+            mBackBtn->animate()
+                .translationY(0)
+                .setDuration(350)
+                .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
+                .start(manager().windowManager().animationManager());
+        }
     }
 
 private:
-    Button*    mBtn       = nullptr;
-    ImageView* mIcon      = nullptr;
-    bool       mIconMoved = false;
-};
-
-// -------- SecondActivity (blue) --------
-
-class SecondActivity : public Activity {
-public:
-    void onCreate(Bundle& state) override {
-        int from = state.getInt("from", 0);
-        printf("SecondActivity::onCreate (from=%d)\n", from);
-
-        auto* root = new ViewGroup();
-        root->bounds() = {0, 0, 640, 480};
-        setContentView(root);
-
-        auto* bg = new ColorView(RGB565::Blue());
-        bg->bounds() = {0, 0, 640, 480};
-        root->addView(bg);
-
-        auto* btn = new Button(RGB565::Red(), 120, 48);
-        btn->bounds() = {260, 216, 120, 48};
-        btn->setOnClick([](void* self) {
-            ((SecondActivity*)self)->finish();
-        }, this);
-        root->addView(btn);
-
-        auto* label = new TextView(120, 24);
-        label->bounds() = {260, 180, 120, 24};
-        root->addView(label);
-    }
+    int        mIndex = 0;
+    ImageView* mIcon = nullptr;
+    TextView*  mLabel = nullptr;
+    Button*    mBackBtn = nullptr;
 };
 
 // -------- entry --------
 
 int main() {
 #ifdef _WIN32
-    printf("LithoUI — hello_litho (GDI)\n");
-
+    printf("LithoUI — gallery (GDI)\n");
     GdiDisplay display;
     if (!display.init(640, 480)) {
         printf("FATAL: display init failed\n");
         return 1;
     }
-
     GdiInput input(display);
     GdiTick  tick;
 #else
-    printf("LithoUI — hello_litho (X11)\n");
-
+    printf("LithoUI — gallery (X11)\n");
     X11Display display;
     if (!display.init(640, 480)) {
         printf("FATAL: display init failed\n");
         return 1;
     }
-
     X11Input input(display);
     X11Tick  tick;
 #endif
@@ -185,15 +213,14 @@ int main() {
     wm.initPFB(128, 4, 2);
 
     ActivityManager am(wm);
-
-    am.registerActivity<MainActivity>("MainActivity");
-    am.registerActivity<SecondActivity>("SecondActivity");
+    am.registerActivity<GalleryActivity>("GalleryActivity");
+    am.registerActivity<DetailActivity>("DetailActivity");
 
     Intent startIntent;
-    startIntent.target = "MainActivity";
+    startIntent.target = "GalleryActivity";
     am.startActivity(startIntent);
 
-    printf("LithoUI — running\n");
+    printf("LithoUI — running (%d images)\n", kImageAssetCount);
     wm.run();
     printf("LithoUI — done\n");
     return 0;

@@ -85,6 +85,69 @@ public:
         }
     }
 
+    // Copy external pixels with optional per-pixel alpha mask.
+    void copyPixels(const uint16_t* src, const uint8_t* mask,
+                    int srcW, int srcH, int dx, int dy) {
+        int sx0 = dx + mScreenX;
+        int sy0 = dy + mScreenY;
+        int sx1 = sx0 + srcW;
+        int sy1 = sy0 + srcH;
+
+        if (sx0 < mClipL) sx0 = mClipL;
+        if (sy0 < mClipT) sy0 = mClipT;
+        if (sx1 > mClipR) sx1 = mClipR;
+        if (sy1 > mClipB) sy1 = mClipB;
+        if (sx0 >= sx1 || sy0 >= sy1) return;
+
+        int tx0   = sx0 - mTileOrgX;
+        int ty0   = sy0 - mTileOrgY;
+        int copyW = sx1 - sx0;
+        int copyH = sy1 - sy0;
+
+        if (tx0 < 0) { copyW += tx0; tx0 = 0; }
+        if (ty0 < 0) { copyH += ty0; ty0 = 0; }
+        if (tx0 + copyW > mTile->width())  copyW = mTile->width()  - tx0;
+        if (ty0 + copyH > mTile->height()) copyH = mTile->height() - ty0;
+        if (copyW <= 0 || copyH <= 0) return;
+
+        int srcOffX = sx0 - dx - mScreenX;
+        int srcOffY = sy0 - dy - mScreenY;
+
+        uint16_t* dstBuf = mTile->buffer();
+
+        if (mAlpha == 255 && !mask) {
+            for (int y = 0; y < copyH; y++) {
+                uint16_t*       dstRow = dstBuf + (ty0 + y) * mTile->stride() + tx0;
+                const uint16_t* srcRow = src + (srcOffY + y) * srcW + srcOffX;
+                memcpy(dstRow, srcRow, copyW * sizeof(uint16_t));
+            }
+            return;
+        }
+
+        uint32_t viewA = mAlpha;
+        for (int y = 0; y < copyH; y++) {
+            uint16_t*       dstRow  = dstBuf + (ty0 + y) * mTile->stride() + tx0;
+            const uint16_t* srcRow  = src + (srcOffY + y) * srcW + srcOffX;
+            const uint8_t*  maskRow = mask ? (mask + (srcOffY + y) * srcW + srcOffX) : nullptr;
+
+            for (int x = 0; x < copyW; x++) {
+                uint16_t s = srcRow[x];
+                uint16_t d = dstRow[x];
+                uint32_t a = maskRow ? (maskRow[x] * viewA / 255) : viewA;
+
+                if (a == 255) {
+                    dstRow[x] = s;
+                } else if (a > 0) {
+                    uint32_t ia = 255 - a;
+                    uint16_t r = (uint16_t)((((s >> 11) & 0x1F) * a + ((d >> 11) & 0x1F) * ia) / 255) << 11;
+                    uint16_t g = (uint16_t)((((s >> 5)  & 0x3F) * a + ((d >> 5)  & 0x3F) * ia) / 255) << 5;
+                    uint16_t b = (uint16_t)((( s        & 0x1F) * a + ( d        & 0x1F) * ia) / 255);
+                    dstRow[x] = r | g | b;
+                }
+            }
+        }
+    }
+
     void copyTile(const Tile& src, int dx, int dy) {
         int sx0 = dx + mScreenX;
         int sy0 = dy + mScreenY;

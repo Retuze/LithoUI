@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(LithoUI LANGUAGES CXX)
+project(LithoUI LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,14 @@ add_library(litho STATIC
     framework/view/view.cpp
     framework/intent/bundle.cpp
     framework/activity/activity.cpp
+    generated/res_bundle.c
+)
+
+# Resource packing target (run manually: cmake --build build --target pack_res)
+add_custom_target(pack_res
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/pack_res.py"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Packing res/*.png → generated/"
 )
 
 target_include_directories(litho PUBLIC ${CMAKE_SOURCE_DIR})
