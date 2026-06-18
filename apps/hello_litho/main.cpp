@@ -14,9 +14,16 @@
 #include "port/display_adapter.hpp"
 #include "port/input_adapter.hpp"
 #include "port/tick_adapter.hpp"
+
+#ifdef _WIN32
+#include "port/gdi/gdi_display.hpp"
+#include "port/gdi/gdi_input.hpp"
+#include "port/gdi/gdi_tick.hpp"
+#else
 #include "port/x11/x11_display.hpp"
 #include "port/x11/x11_input.hpp"
 #include "port/x11/x11_tick.hpp"
+#endif
 
 #include <cstdio>
 
@@ -32,7 +39,7 @@ public:
         uint8_t r = (color.value >> 11) & 0x1F;
         uint8_t g = (color.value >> 5)  & 0x3F;
         uint8_t b =  color.value        & 0x1F;
-        mPressedColor = RGB565::fromRGB(r * 128 / 31, g * 64 / 63, b * 128 / 31);  // half bright
+        mPressedColor = RGB565::fromRGB(r * 128 / 31, g * 64 / 63, b * 128 / 31);
     }
 
     void onDraw(Painter& p) override {
@@ -48,19 +55,17 @@ public:
 
     bool onTouchEvent(TouchEvent& ev) override {
         if (ev.action == TouchAction::DOWN) {
-            if (!mCallback) return false;
             if (!mPressed) {
                 mPressed = true;
-                invalidate();   // visual state changed
+                invalidate();
             }
-            mCallback(mUser);
             return true;
         }
         if (ev.action == TouchAction::UP) {
-            if (!mCallback) return false;
             if (mPressed) {
                 mPressed = false;
                 invalidate();
+                if (mCallback) mCallback(mUser);
             }
             return true;
         }
@@ -136,26 +141,38 @@ public:
 // -------- entry --------
 
 int main() {
-    printf("LithoUI — hello_litho\n");
+#ifdef _WIN32
+    printf("LithoUI — hello_litho (GDI)\n");
+
+    GdiDisplay display;
+    if (!display.init(640, 480)) {
+        printf("FATAL: display init failed\n");
+        return 1;
+    }
+
+    GdiInput input(display);
+    GdiTick  tick;
+#else
+    printf("LithoUI — hello_litho (X11)\n");
 
     X11Display display;
     if (!display.init(640, 480)) {
-        printf( "FATAL: display init failed\n");
+        printf("FATAL: display init failed\n");
         return 1;
     }
 
     X11Input input(display);
     X11Tick  tick;
+#endif
+
     WindowManager wm(display, input, tick);
     wm.initPFB(128, 4, 4);
 
     ActivityManager am(wm);
 
-    // Register activities — callers only need the name string.
     am.registerActivity<MainActivity>("MainActivity");
     am.registerActivity<SecondActivity>("SecondActivity");
 
-    // Launch main
     Intent startIntent;
     startIntent.target = "MainActivity";
     am.startActivity(startIntent);
