@@ -36,19 +36,19 @@ public:
             View* child = mChildren[i];
             if (!child || !child->visible()) continue;
 
-            int cx = p.screenX() + child->bounds().x;
-            int cy = p.screenY() + child->bounds().y;
-            int cr = cx + child->bounds().width;
-            int cb = cy + child->bounds().height;
+            // transformedBounds bundles translation + rotation in one rect
+            Region tb = child->transformedBounds();
 
-            if (!p.intersectsClip(cx, cy, cr, cb)) continue;
+            int sx = p.screenX() + tb.x;
+            int sy = p.screenY() + tb.y;
+            int sr = sx + tb.width;
+            int sb = sy + tb.height;
 
-            int tx = cx + child->translationX();
-            int ty = cy + child->translationY();
+            if (!p.intersectsClip(sx, sy, sr, sb)) continue;
 
             Painter cp = p;
-            cp.setScreenOrigin(tx, ty);
-            cp.setScreenClip(cx, cy, cr, cb);
+            cp.setScreenOrigin(sx, sy);
+            cp.setScreenClip(sx, sy, sr, sb);
             cp.setAlpha((uint8_t)((uint32_t)p.alpha() * child->alpha() / 255));
             child->onDraw(cp);
         }
@@ -62,11 +62,12 @@ public:
             View* child = mChildren[i];
             if (!child || !child->visible()) continue;
 
-            int cx = screenX + child->bounds().x;
-            int cy = screenY + child->bounds().y;
+            Region tb = child->transformedBounds();
+            int cx = screenX + tb.x;
+            int cy = screenY + tb.y;
 
-            if (ev.x >= cx && ev.x < cx + child->bounds().width &&
-                ev.y >= cy && ev.y < cy + child->bounds().height) {
+            if (ev.x >= cx && ev.x < cx + tb.width &&
+                ev.y >= cy && ev.y < cy + tb.height) {
 
                 if (child->dispatchTouchEvent(ev, cx, cy)) {
                     if (!ev.handler) {

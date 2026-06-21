@@ -46,9 +46,15 @@ public:
         return *this;
     }
 
+    ValueAnimator& setRepeatCount(int count) {
+        mRepeatCount = count;
+        return *this;
+    }
+
     void start() {
         mWaitingStart = true;
         mRunning      = true;
+        mRepeatRemaining = mRepeatCount;
     }
 
     void cancel() {
@@ -73,18 +79,31 @@ public:
 
         if (raw >= 1.0f) {
             if (mCallback) mCallback(1.0f, mUser);
-            mRunning = false;
+
+            if (mRepeatRemaining > 0) {
+                mRepeatRemaining--;
+                mStartTimeMs  = frameTimeMs;
+                mWaitingStart = false;
+            } else if (mRepeatRemaining < 0) {
+                // infinite repeat
+                mStartTimeMs  = frameTimeMs;
+                mWaitingStart = false;
+            } else {
+                mRunning = false;
+            }
         }
     }
 
 private:
-    uint32_t      mStartTimeMs  = 0;
-    uint32_t      mDurationMs   = 300;
-    Interpolator  mInterpolator = Interpolator::LINEAR;
-    bool          mWaitingStart = false;
-    bool          mRunning      = false;
-    UpdateCallback mCallback    = nullptr;
-    void*         mUser         = nullptr;
+    uint32_t      mStartTimeMs    = 0;
+    uint32_t      mDurationMs     = 300;
+    Interpolator  mInterpolator   = Interpolator::LINEAR;
+    bool          mWaitingStart   = false;
+    bool          mRunning        = false;
+    int           mRepeatCount    = 0;
+    int           mRepeatRemaining = 0;
+    UpdateCallback mCallback      = nullptr;
+    void*         mUser           = nullptr;
 };
 
 } // namespace litho

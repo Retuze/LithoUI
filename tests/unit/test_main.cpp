@@ -4,6 +4,7 @@ bool run_region_tests();
 bool run_dirty_list_tests();
 bool run_painter_tests();
 bool run_pfb_tests();
+bool run_rotate_tests();
 
 int main() {
     printf("LithoUI unit tests\n\n");
@@ -13,7 +14,7 @@ int main() {
     if (!run_painter_tests())     ok = false;
     if (!run_dirty_list_tests())  ok = false;
     if (!run_pfb_tests())         ok = false;
-    // if (!run_pfb_tests())         ok = false;
+    if (!run_rotate_tests())      ok = false;
 
     printf("\n%s\n", ok ? "ALL PASS" : "SOME FAILED");
     return ok ? 0 : 1;

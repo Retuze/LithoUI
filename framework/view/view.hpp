@@ -28,9 +28,11 @@ public:
     int16_t translationY() const { return mTranslationY; }
     uint8_t alpha()        const { return mAlpha; }
 
-    void setTranslationX(int16_t tx) { mTranslationX = tx; invalidate(); }
-    void setTranslationY(int16_t ty) { mTranslationY = ty; invalidate(); }
-    void setAlpha(uint8_t a)         { mAlpha = a;        invalidate(); }
+    // Setters invalidate both old and new screen rects to prevent ghosting
+    // during animation. Alpha changes only need single invalidate (no motion).
+    void setTranslationX(int16_t tx);
+    void setTranslationY(int16_t ty);
+    void setAlpha(uint8_t a)         { mAlpha = a; invalidate(); }
 
     ViewPropertyAnimator& animate();
 
@@ -40,7 +42,20 @@ public:
 
     virtual void onDraw(Painter& p) { (void)p; }
 
-    // Walk up parent chain to compute screen coords, then push to DirtyList.
+    // Local-space bounds including all transforms (translation, rotation).
+    // Default: mBounds shifted by translation.  Subclasses override to
+    // add rotation, scale, etc.  Used by screenBounds() and ViewGroup clip.
+    virtual Region transformedBounds() const {
+        return {static_cast<int16_t>(mBounds.x + mTranslationX),
+                static_cast<int16_t>(mBounds.y + mTranslationY),
+                mBounds.width, mBounds.height};
+    }
+
+    // Compute screen-space rectangle for this view (bounds + translation,
+    // accumulated up the parent chain). Used by invalidate() and setters.
+    Region screenBounds() const;
+
+    // Push the screen-space bounds (see screenBounds()) to the DirtyList.
     void invalidate();
 
     // Touch dispatch. Default: no children, just call onTouchEvent.

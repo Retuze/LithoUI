@@ -8,22 +8,38 @@ View::~View() {
     delete mAnimator;
 }
 
-void View::invalidate() {
-    if (!mDirtyList) return;
-
-    int sx = mBounds.x;
-    int sy = mBounds.y;
+Region View::screenBounds() const {
+    Region r = transformedBounds();
     ViewGroup* p = mParent;
     while (p) {
-        sx += p->bounds().x;
-        sy += p->bounds().y;
+        r.x += p->bounds().x + p->translationX();
+        r.y += p->bounds().y + p->translationY();
         p = p->parent();
     }
+    return r;
+}
 
-    mDirtyList->markDirty({
-        (int16_t)sx, (int16_t)sy,
-        mBounds.width, mBounds.height
-    });
+void View::invalidate() {
+    if (!mDirtyList) return;
+    mDirtyList->markDirty(screenBounds());
+}
+
+void View::setTranslationX(int16_t tx) {
+    if (tx == mTranslationX) return;
+    // Capture old screen rect before mutation, then invalidate both
+    // old and new positions so the previous frame's pixels are cleaned up.
+    Region old = screenBounds();
+    mTranslationX = tx;
+    invalidate();                                // new position
+    if (mDirtyList) mDirtyList->markDirty(old);  // old position
+}
+
+void View::setTranslationY(int16_t ty) {
+    if (ty == mTranslationY) return;
+    Region old = screenBounds();
+    mTranslationY = ty;
+    invalidate();
+    if (mDirtyList) mDirtyList->markDirty(old);
 }
 
 bool View::dispatchTouchEvent(TouchEvent& ev, int screenX, int screenY) {

@@ -1,7 +1,23 @@
 #!/usr/bin/env python3
-"""pack_res.py — convert res/*.png to RGB565 + A8, generate C arrays."""
+"""pack_res.py — pack typed UI resources into res_images.bin + headers.
 
-import os, struct, sys
+Usage:  python3 tools/pack_res.py <ui_dir> [output_dir]
+
+Directory layout:
+    ui/<name>/
+      info.txt              name=..., version=...
+      rgb565/               opaque RGB565  → FMT_RGB565
+      rgba/                 RGBA with alpha → FMT_RGB565_A8
+      grayscale/            8-bit grayscale → FMT_GRAYSCALE
+      rotatable/            rotation-ready → FMT_RGB565 (triggers sin table)
+
+Outputs:
+    res_images.bin    binary bundle (header + entries + pixels + sin table)
+    res_images.h      ImageId enum, ImageEntry, inline accessors
+    sin_table.h       Q15 sin LUT (only if rotatable/ has images)
+"""
+
+import os, struct, sys, math
 from pathlib import Path
 
 try:
@@ -10,204 +26,343 @@ except ImportError:
     print("ERROR: Pillow not installed. Run: pip install Pillow")
     sys.exit(1)
 
-SCRIPT_DIR  = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
-RES_DIR     = PROJECT_DIR / "res"
-GEN_DIR     = PROJECT_DIR / "generated"
+# ── globals (set in main) ──
 
-HEADER_MAGIC = b"LIMG"
-PACK_MAGIC   = b"LRES"
+GEN_DIR    = None
+BUNDLE_NAME = None
 
+# ── constants ──
+
+MAGIC       = b"LIMB"
+VERSION     = 0x00010000
+ENTRY_SIZE  = 16
+HEADER_SIZE = 16
+
+FMT_RGB565    = 0
+FMT_RGB565_A8 = 1   # RGBA with alpha mask
+FMT_A8        = 2   # single-channel alpha (tintable, default black)
+
+FLAG_HAS_SIN  = 0x0001
+
+PRE_RGB565 = ""
+PRE_RGBA   = "A_"
+PRE_GRAY   = "G_"
+PRE_ROT    = "R_"
+
+
+# ── helpers ──
 
 def rgba_to_rgb565(r, g, b):
     return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
 
 
-def convert_png(path):
-    """Convert a PNG file to RGB565 pixels + A8 mask. Returns (name, w, h, pixels, alpha)."""
+def safe_enum_name(name):
+    return name.replace("-", "_").replace(" ", "_").upper()
+
+
+# ── per‑type packer ──
+
+def pack_rgba(path):
+    """PNG → RGB565 pixels + A8 mask. Returns (w, h, pixels, alpha, has_alpha)."""
     img = Image.open(path).convert("RGBA")
     w, h = img.size
     data = img.getdata()
-
-    pixels = []
-    alpha  = []
-    has_alpha = False
-
+    pixels, alpha, has = [], [], False
     for r, g, b, a in data:
         pixels.append(rgba_to_rgb565(r, g, b))
         alpha.append(a)
-        if a != 255:
-            has_alpha = True
-
-    name = path.stem.upper()
-    return name, w, h, pixels, alpha, has_alpha
+        if a != 255: has = True
+    return w, h, pixels, alpha, has
 
 
-def write_limg(path, w, h, pixels, alpha, has_alpha):
-    """Write a single .limg binary file."""
-    flags = 1 if has_alpha else 0
-    fmt   = 0  # raw
-
-    with open(path, "wb") as f:
-        f.write(HEADER_MAGIC)                         # magic
-        f.write(struct.pack("<H", w))                  # width
-        f.write(struct.pack("<H", h))                  # height
-        f.write(struct.pack("<B", flags))              # flags
-        f.write(struct.pack("<B", fmt))                # format
-        f.write(struct.pack("<H", 0))                  # reserved
-        f.write(struct.pack(f"<{w*h}H", *pixels))      # RGB565
-        if has_alpha:
-            f.write(struct.pack(f"<{w*h}B", *alpha))   # A8
+def pack_rgb565(path):
+    """PNG → opaque RGB565. Alpha channel is discarded."""
+    img = Image.open(path).convert("RGBA")
+    w, h = img.size
+    data = img.getdata()
+    pixels = [rgba_to_rgb565(r, g, b) for r, g, b, _ in data]
+    return w, h, pixels
 
 
-def write_lres(path, images):
-    """Write the .lres resource pack."""
-    count = len(images)
-    idx_size = count * 32  # each entry: 20B name + 4B offset + 4B size + 2B w + 2B h
-    data_offset = 16 + idx_size  # header(16) + index
+def pack_grayscale(path):
+    """PNG → 8‑bit grayscale (luminance of RGB)."""
+    img = Image.open(path).convert("RGB")
+    w, h = img.size
+    data = img.getdata()
+    gray = []
+    for r, g, b in data:
+        # BT.601 luminance
+        y = (r * 77 + g * 150 + b * 29) // 256
+        gray.append(y)
+    return w, h, gray
 
-    # Compute offsets
-    entries = []
-    off = data_offset
-    for name, w, h, pixels, alpha, has_alpha in images:
-        size = 12 + w * h * 2  # header + pixels
-        if has_alpha:
-            size += w * h      # alpha
-        entries.append((name, w, h, off, size, has_alpha, pixels, alpha))
-        off += size
+
+# ── sin table ──
+
+def generate_sin_table():
+    """Q15 sin table [0°, 360°). Returns list of 360 int16_t."""
+    return [int(round(math.sin(math.radians(d)) * 32767)) for d in range(360)]
+
+
+# ── binary writer ──
+
+def write_bin(path, entries, data_chunks, sin_table):
+    """Write res_images.bin."""
+    has_sin = sin_table is not None
+    flags = FLAG_HAS_SIN if has_sin else 0
+
+    off = HEADER_SIZE + len(entries) * ENTRY_SIZE
+    for e in entries:
+        e["offset"] = off
+        e["size"] = len(e["chunk"])
+        off += len(e["chunk"])
+
+    sin_offset = off if has_sin else 0
 
     with open(path, "wb") as f:
         # Header
-        f.write(PACK_MAGIC)
-        f.write(struct.pack("<H", 1))       # version
-        f.write(struct.pack("<H", count))
-        f.write(struct.pack("<Q", 0))       # reserved
+        f.write(MAGIC)
+        f.write(struct.pack("<I", VERSION))
+        f.write(struct.pack("<H", len(entries)))
+        f.write(struct.pack("<H", flags))
+        f.write(struct.pack("<I", sin_offset))
 
-        # Index
-        for name, w, h, off, size, has_alpha, _, _ in entries:
-            name_bytes = name[:19].ljust(20, "\0").encode("ascii")
-            f.write(name_bytes)                    # name[20]
-            f.write(struct.pack("<I", off))        # offset
-            f.write(struct.pack("<I", size))       # size
-            f.write(struct.pack("<H", w))          # width
-            f.write(struct.pack("<H", h))          # height
+        # Entries
+        for e in entries:
+            f.write(struct.pack("<HHHHII",
+                     e["id"], e["width"], e["height"],
+                     e["fmt"], e["offset"], e["size"]))
 
-        # Data
-        for _, w, h, _, _, has_alpha, pixels, alpha in entries:
-            flags = 1 if has_alpha else 0
-            f.write(HEADER_MAGIC)
-            f.write(struct.pack("<H", w))
-            f.write(struct.pack("<H", h))
-            f.write(struct.pack("<B", flags))
-            f.write(struct.pack("<B", 0))   # format
-            f.write(struct.pack("<H", 0))   # reserved
-            f.write(struct.pack(f"<{w*h}H", *pixels))
-            if has_alpha:
-                f.write(struct.pack(f"<{w*h}B", *alpha))
+        # Pixel data
+        for e in entries:
+            f.write(e["chunk"])
+
+        # Sin table
+        if has_sin:
+            f.write(struct.pack(f"<{360}h", *sin_table))
 
 
-def write_c_array(f, name, values, elem_size):
-    """Write a C array: const TYPE name[N] = { ... };"""
-    etype = f"uint{elem_size*8}_t"
-    n     = len(values)
-    per_line = 16
+# ── header writer ──
 
-    f.write(f"const {etype} {name}[{n}] = {{\n")
-    for i in range(0, n, per_line):
-        chunk = values[i:i+per_line]
-        hex_vals = ", ".join(f"0x{v:0{elem_size*2}x}" for v in chunk)
-        f.write(f"    {hex_vals},\n")
-    f.write("};\n\n")
+RES_H_TEMPLATE = """// Auto-generated by pack_res.py — DO NOT EDIT
+#pragma once
+#include <stdint.h>
+
+#define RES_BUNDLE_NAME    "{bundle_name}"
+#define RES_BUNDLE_VERSION 0x{version:08X}
+
+typedef enum ImageId {{
+{enum_entries}
+    IMG_COUNT = {count}
+}} ImageId;
+
+enum ImageFormat {{
+    FMT_RGB565    = 0,  // opaque RGB565
+    FMT_RGB565_A8 = 1,  // RGB + alpha mask
+    FMT_A8        = 2,  // single-channel alpha (default black, tintable)
+}};
+
+#pragma pack(push, 1)
+typedef struct ImageEntry {{
+    uint16_t id;
+    uint16_t width;
+    uint16_t height;
+    uint16_t format;
+    uint32_t offset;
+    uint32_t size;
+}} ImageEntry;
+
+typedef struct ImageBundleHeader {{
+    uint8_t  magic[4];
+    uint32_t version;
+    uint16_t count;
+    uint16_t flags;
+    uint32_t sinOffset;
+}} ImageBundleHeader;
+#pragma pack(pop)
+
+#ifdef __cplusplus
+extern "C" {{
+#endif
+extern const uint8_t _binary_res_images_bin_start[];
+extern const uint8_t _binary_res_images_bin_end[];
+#ifdef __cplusplus
+}}
+#endif
+
+#define RES_IMAGE_BUNDLE  _binary_res_images_bin_start
+
+#ifdef __cplusplus
+static inline const ImageBundleHeader* resHeader() {{
+    return (const ImageBundleHeader*)RES_IMAGE_BUNDLE;
+}}
+static inline const ImageEntry* imageEntry(ImageId id) {{
+    return &((const ImageEntry*)(RES_IMAGE_BUNDLE + 16))[id];
+}}
+static inline const uint16_t* imagePixels(ImageId id) {{
+    return (const uint16_t*)(RES_IMAGE_BUNDLE + imageEntry(id)->offset);
+}}
+static inline const uint8_t* imageAlpha(ImageId id) {{
+    const ImageEntry* e = imageEntry(id);
+    if (e->format != FMT_RGB565_A8) return 0;
+    return (const uint8_t*)(RES_IMAGE_BUNDLE + e->offset
+                           + (uint32_t)e->width * e->height * 2);
+}}
+{sin_accessor}
+#endif
+"""
 
 
-def generate_c(images, gen_dir):
-    """Generate res_bundle.c and res_bundle.h."""
-    c_path = gen_dir / "res_bundle.c"
-    h_path = gen_dir / "res_bundle.h"
+def write_headers(gen_dir, bundle_name, version, entries, sin_table):
+    """Write res_images.h."""
 
-    # Sanitize names for C identifiers
-    safe_names = []
-    for name, _, _, _, _, _ in images:
-        safe = name.replace("-", "_").replace(" ", "_")
-        safe_names.append(safe)
+    # ImageId enum entries
+    def img_id(e):
+        return f"IMG_{e['prefix']}{safe_enum_name(e['name'])}"
+    enum_lines = [f"    {img_id(e)} = {e['id']}," for e in entries]
 
-    with open(c_path, "w") as f:
-        f.write('// Auto-generated by pack_res.py — DO NOT EDIT\n')
-        f.write('#include "res_bundle.h"\n\n')
+    # Sin table accessor (inline, from bundle)
+    has_sin = sin_table is not None
+    if has_sin:
+        sin_acc = (
+            "\n"
+            "// Access the sin table embedded in the resource bundle.\n"
+            "static inline const int16_t* resSinTable() {\n"
+            "    return (const int16_t*)(RES_IMAGE_BUNDLE + resHeader()->sinOffset);\n"
+            "}\n"
+            "static inline int16_t sinDeg(int deg) {\n"
+            "    const int16_t* t = resSinTable();\n"
+            "    return t[(deg % 360 + 360) % 360];\n"
+            "}\n"
+            "static inline int16_t cosDeg(int deg) {\n"
+            "    return sinDeg(deg + 90);\n"
+            "}\n"
+        )
+    else:
+        sin_acc = (
+            "\n"
+            "static inline const int16_t* resSinTable() { return 0; }\n"
+        )
 
-        for (name, _, _, pixels, alpha, has_alpha), safe in zip(images, safe_names):
-            write_c_array(f, f"res_pixels_{safe}", pixels, 2)
-            if has_alpha:
-                write_c_array(f, f"res_alpha_{safe}", alpha, 1)
-
-        # ImageAsset table
-        f.write(f"const ImageAsset kImageAssets[{len(images)}] = {{\n")
-        for (name, w, h, _, alpha, has_alpha), safe in zip(images, safe_names):
-            alpha_ptr = f"res_alpha_{safe}" if has_alpha else "0"
-            f.write(f'    {{"{name}", {w}, {h}, res_pixels_{safe}, {alpha_ptr}}},\n')
-        f.write("};\n\n")
-        f.write(f"const int kImageAssetCount = {len(images)};\n")
-
+    h_path = gen_dir / "res_images.h"
     with open(h_path, "w") as f:
-        f.write('// Auto-generated by pack_res.py — DO NOT EDIT\n')
-        f.write('#pragma once\n')
-        f.write('#include <stdint.h>\n\n')
-        f.write('typedef struct ImageAsset {\n')
-        f.write('    const char*     name;\n')
-        f.write('    uint16_t        width;\n')
-        f.write('    uint16_t        height;\n')
-        f.write('    const uint16_t* pixels;\n')
-        f.write('    const uint8_t*  alpha;\n')
-        f.write('} ImageAsset;\n\n')
-        f.write('#ifdef __cplusplus\n')
-        f.write('extern "C" {\n')
-        f.write('#endif\n')
-        f.write(f'extern const ImageAsset kImageAssets[{len(images)}];\n')
-        f.write(f'extern const int kImageAssetCount;\n')
-        f.write('#ifdef __cplusplus\n')
-        f.write('}\n')
-        f.write('#endif\n')
+        f.write(RES_H_TEMPLATE.format(
+            bundle_name=bundle_name,
+            version=version,
+            enum_entries="\n".join(enum_lines),
+            count=len(entries),
+            sin_accessor=sin_acc,
+        ))
 
-        for (name, _, _, _, _, _), safe in zip(images, safe_names):
-            f.write(f'extern const uint16_t res_pixels_{safe}[];\n')
-            alpha_ptr = f"res_alpha_{safe}"
-            f.write(f'extern const uint8_t  {alpha_ptr}[];\n')
 
+# ── main ──
 
 def main():
-    gen_dir = GEN_DIR
-    gen_dir.mkdir(exist_ok=True)
-
-    png_files = sorted(RES_DIR.glob("*.png"))
-    if not png_files:
-        print("ERROR: no PNG files found in res/")
+    if len(sys.argv) < 2:
+        print("Usage: pack_res.py <ui_dir> [output_dir]")
         sys.exit(1)
 
-    print(f"Found {len(png_files)} PNG files")
+    ui_dir = Path(sys.argv[1]).resolve()
+    if not ui_dir.is_dir():
+        print(f"ERROR: {ui_dir} is not a directory")
+        sys.exit(1)
 
-    images = []
-    for path in png_files:
-        name, w, h, pixels, alpha, has_alpha = convert_png(path)
-        images.append((name, w, h, pixels, alpha, has_alpha))
+    global GEN_DIR
+    if len(sys.argv) > 2:
+        GEN_DIR = Path(sys.argv[2]).resolve()
+    else:
+        GEN_DIR = ui_dir.parent.parent / "generated"
+    GEN_DIR.mkdir(exist_ok=True)
 
-        # Write .limg
-        limg_path = gen_dir / f"{name}.limg"
-        write_limg(limg_path, w, h, pixels, alpha, has_alpha)
-        alpha_str = "A8" if has_alpha else "opaque"
-        print(f"  {name:20s} {w}x{h}  {len(pixels)}px  alpha={alpha_str}  → {limg_path.name}")
+    # Read info.txt
+    info_path = ui_dir / "info.txt"
+    bundle_name = ui_dir.name
+    version = 1
+    if info_path.exists():
+        for line in info_path.read_text().strip().splitlines():
+            line = line.strip()
+            if '=' in line:
+                k, v = line.split('=', 1)
+                k, v = k.strip(), v.strip()
+                if k == "name": bundle_name = v
+                elif k == "version": version = int(v)
 
-    # Write .lres pack
-    lres_path = gen_dir / "res_bundle.lres"
-    write_lres(lres_path, images)
-    lres_size = os.path.getsize(lres_path)
-    print(f"\n  Pack: {lres_path.name} ({lres_size} bytes, {len(images)} images)")
+    print(f"UI: {bundle_name}  version={version}")
 
-    # Generate C source
-    generate_c(images, gen_dir)
-    c_size = os.path.getsize(gen_dir / "res_bundle.c")
-    print(f"  Generated: res_bundle.c ({c_size} bytes)")
-    print(f"  Generated: res_bundle.h")
-    print("Done.")
+    # Collect images by type
+    types = [
+        ("rgb565",    PRE_RGB565, FMT_RGB565,    pack_rgb565,    False),
+        ("rgba",      PRE_RGBA,   FMT_RGB565_A8, pack_rgba,      True),
+        ("grayscale", PRE_GRAY,   FMT_A8,        pack_grayscale, False),
+        ("rotatable", PRE_ROT,    FMT_RGB565_A8, pack_rgba,      True),
+    ]
+
+    all_entries = []
+    all_chunks  = []
+
+    for dirname, prefix, default_fmt, pack_fn, has_mask in types:
+        sub = ui_dir / dirname
+        if not sub.is_dir():
+            continue
+        pngs = sorted(sub.glob("*.png"))
+        if not pngs:
+            continue
+
+        print(f"\n  [{dirname}/]  {len(pngs)} files  default_fmt={default_fmt}  prefix='{prefix}'")
+        for p in pngs:
+            name = p.stem
+            actual_fmt = default_fmt
+            if has_mask:
+                w, h, pixels, alpha, has_alpha = pack_fn(p)
+                pix_bytes = struct.pack(f"<{w*h}H", *pixels)
+                if has_alpha:
+                    alpha_bytes = struct.pack(f"<{w*h}B", *alpha)
+                    chunk = pix_bytes + alpha_bytes
+                else:
+                    # Fully opaque → plain RGB565, nothing to alpha-blend
+                    actual_fmt = FMT_RGB565
+                    chunk = pix_bytes
+            else:
+                if default_fmt == FMT_A8:
+                    w, h, gray = pack_fn(p)
+                    chunk = struct.pack(f"<{w*h}B", *gray)
+                else:
+                    w, h, pixels = pack_fn(p)
+                    chunk = struct.pack(f"<{w*h}H", *pixels)
+
+            entry = {
+                "id":     len(all_entries),
+                "name":   name,
+                "prefix": prefix,
+                "width":  w,
+                "height": h,
+                "fmt":    actual_fmt,
+                "offset": 0,
+                "size":   0,
+                "chunk":  chunk,
+            }
+            all_entries.append(entry)
+            all_chunks.append(chunk)
+            print(f"    {prefix}{name:20s} {w}x{h}  {len(chunk)}B")
+
+    # Sin table — only if rotatable/ has images
+    rot_count = sum(1 for e in all_entries if e["prefix"] == PRE_ROT)
+    sin_table = generate_sin_table() if rot_count > 0 else None
+    if sin_table:
+        print(f"\n  Sin table: 360 entries, {360*2} bytes (rotatable images: {rot_count})")
+
+    # Write outputs
+    bin_path = GEN_DIR / "res_images.bin"
+    write_bin(bin_path, all_entries, all_chunks, sin_table)
+    bin_size = os.path.getsize(bin_path)
+    print(f"\n  Bundle: {bin_path.name} ({bin_size} bytes, {len(all_entries)} images)")
+
+    write_headers(GEN_DIR, bundle_name, version, all_entries, sin_table)
+    print(f"  Headers: res_images.h", end="")
+    if sin_table:
+        print(f" + sin_table.h")
+    else:
+        print()
 
 
 if __name__ == "__main__":

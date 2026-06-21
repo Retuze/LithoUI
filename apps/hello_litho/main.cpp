@@ -15,7 +15,7 @@
 #include "framework/widget/image_view.hpp"
 #include "framework/animation/view_property_animator.hpp"
 #include "framework/animation/animation_manager.hpp"
-#include "generated/res_bundle.h"
+#include "res_images.h"
 
 #include "port/display_adapter.hpp"
 #include "port/input_adapter.hpp"
@@ -60,11 +60,13 @@ public:
     void setOnIconClick(void (*cb)(void*, int), void* user) { mCb = cb; mUser = user; }
 
     bool onTouchEvent(TouchEvent& ev) override {
+        // DOWN: claim handler so Window captures us for MOVE/UP
+        if (ev.action == TouchAction::DOWN) return true;
         if (ev.action == TouchAction::UP && mCb) {
             int col = ev.x / kCellW;
             int row = ev.y / kCellH;
             int idx = row * kCols + col;
-            if (idx >= 0 && idx < kImageAssetCount) mCb(mUser, idx);
+            if (idx >= 0 && idx < IMG_COUNT) mCb(mUser, idx);
             return true;
         }
         return false;
@@ -96,7 +98,7 @@ public:
         bg->bounds() = {0, 0, 640, 480};
         root->addView(bg);
 
-        int count = kImageAssetCount;
+        int count = IMG_COUNT;
         if (count > kCols * kRows) count = kCols * kRows;
 
         for (int i = 0; i < count; i++) {
@@ -107,20 +109,19 @@ public:
 
             auto* icon = new ImageView(100, 100);
             icon->bounds() = {(int16_t)cx, (int16_t)cy, 100, 100};
-            icon->setImage(&kImageAssets[i]);
+            icon->setImageId((ImageId)i);
             root->addView(icon);
         }
     }
 };
 
-// -------- DetailActivity: single icon large --------
+// -------- DetailActivity: feature showcase --------
 
 class DetailActivity : public Activity {
 public:
     void onCreate(Bundle& state) override {
         mIndex = state.getInt("index", 0);
-        printf("DetailActivity::onCreate idx=%d (%s)\n", mIndex,
-               mIndex < kImageAssetCount ? kImageAssets[mIndex].name : "?");
+        printf("DetailActivity::onCreate idx=%d\n", mIndex);
 
         auto* root = new ViewGroup();
         root->bounds() = {0, 0, 640, 480};
@@ -130,60 +131,92 @@ public:
         bg->bounds() = {0, 0, 640, 480};
         root->addView(bg);
 
-        // Icon centered
-        if (mIndex < kImageAssetCount) {
-            auto* icon = new ImageView(100, 100);
-            icon->bounds() = {270, 120, 100, 100};
-            icon->setImage(&kImageAssets[mIndex]);
+        int bw = 100, bh = 100;
+        int y1 = 60, y2 = 220;
 
-            // Slide in from below
-            icon->setTranslationY(80);
-            root->addView(icon);
-            mIcon = icon;
-        }
+        // [0] Original RGBA
+        addImage(root, 50,  y1, bw, bh, (ImageId)mIndex);
 
-        // Name label
-        auto* label = new TextView(200, 28);
-        label->bounds() = {220, 240, 200, 28};
-        root->addView(label);
-        mLabel = label;
+        // [1] Grayscale + red tint (A8 = alpha通道，红色填充)
+        addImage(root, 210, y1, bw, bh, IMG_G_MUSIC)
+            ->setTintColor(RGB565::fromRGB(255, 80, 80));
+
+        // [2] 90° rotation (pivot at 0,0 → output fits within bounds)
+        addImage(root, 370, y1, bw, bh, (ImageId)mIndex)
+            ->setRotationAngle(90);
+
+        // [3] Gold tint on RGBA (50% blend)
+        addImage(root, 50,  y2, bw, bh, (ImageId)mIndex)
+            ->setTintColor(RGB565::fromRGB(255, 200, 60));
+
+        // [4] Continuous animated rotation (center pivot)
+        addImage(root, 210, y2, bw, bh, (ImageId)mIndex);
+        mImages[4]->setTranslationY(80);
+
+        // [5] Grayscale + 180° + blue tint
+        addImage(root, 370, y2, bw, bh, IMG_G_MUSIC)
+            ->setTintColor(RGB565::fromRGB(100, 200, 255));
+        mImages[5]->setRotationAngle(180);
 
         // Back button
         auto* backBtn = new Button(RGB565::fromRGB(200, 80, 80), 120, 40);
-        backBtn->bounds() = {260, 380, 120, 40};
+        backBtn->bounds() = {260, 400, 120, 40};
         backBtn->setOnClick([](void* self) {
-            ((DetailActivity*)self)->finish();
+            auto* a = (DetailActivity*)self;
+            Intent intent;
+            intent.target = "GalleryActivity";
+            a->startActivity(intent);
         }, this);
-        backBtn->setTranslationY(60);
         root->addView(backBtn);
         mBackBtn = backBtn;
     }
 
     void onResume() override {
         Activity::onResume();
-        if (mIcon) {
-            mIcon->setTranslationY(80);
-            mIcon->animate()
+
+        // Slide image [4] up
+        if (mImages[4]) {
+            mImages[4]->setTranslationY(80);
+            mImages[4]->animate()
                 .translationY(0)
                 .setDuration(300)
                 .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
                 .start(manager().windowManager().animationManager());
         }
-        if (mBackBtn) {
-            mBackBtn->setTranslationY(60);
-            mBackBtn->animate()
-                .translationY(0)
-                .setDuration(350)
-                .setInterpolator(Interpolator::ACCELERATE_DECELERATE)
-                .start(manager().windowManager().animationManager());
+
+        // ── continuous rotation: 0→360°, center pivot, infinite loop ──
+        if (mImages[4]) {
+            auto& am = manager().windowManager().animationManager();
+            mRotAnim.setTarget(mImages[4])
+                .setFloatValues(0, 360)
+                .setSetter([](void* target, float val) {
+                    ((ImageView*)target)->setRotationAngle((int16_t)val);
+                })
+                .setDuration(2000)
+                .setInterpolator(Interpolator::LINEAR);
+            mRotAnim.animator().setRepeatCount(-1);
+            mRotAnim.start();
+            am.addAnimator(&mRotAnim.animator());
         }
     }
 
 private:
-    int        mIndex = 0;
-    ImageView* mIcon = nullptr;
-    TextView*  mLabel = nullptr;
-    Button*    mBackBtn = nullptr;
+    ImageView* addImage(ViewGroup* parent, int x, int y, int w, int h,
+                        ImageId id) {
+        auto* v = new ImageView(w, h);
+        v->bounds() = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+        v->setImageId(id);
+        parent->addView(v);
+        for (int i = 0; i < 6; i++) {
+            if (!mImages[i]) { mImages[i] = v; break; }
+        }
+        return v;
+    }
+
+    int        mIndex    = 0;
+    ImageView* mImages[6] = {};
+    Button*    mBackBtn  = nullptr;
+    ObjectAnimator mRotAnim;
 };
 
 // -------- entry --------
@@ -216,11 +249,13 @@ int main() {
     am.registerActivity<GalleryActivity>("GalleryActivity");
     am.registerActivity<DetailActivity>("DetailActivity");
 
+    // Start directly on the feature showcase with the first icon
     Intent startIntent;
-    startIntent.target = "GalleryActivity";
+    startIntent.target = "DetailActivity";
+    startIntent.putInt("index", 0);
     am.startActivity(startIntent);
 
-    printf("LithoUI — running (%d images)\n", kImageAssetCount);
+    printf("LithoUI — running (%d images)\n", IMG_COUNT);
     wm.run();
     printf("LithoUI — done\n");
     return 0;

@@ -7,9 +7,14 @@
 
 namespace litho {
 
-// PFB: divides the screen into fixed-size blocks with a small tile buffer pool.
-// Renders a region by iterating the blocks covering it — each block gets a Painter
-// set up with the correct tile, screen origin, and clip.
+// PFB (Partial Frame Buffer) — divides the screen into fixed-size blocks and
+// manages a small tile buffer pool.  Rendering iterates over the blocks that
+// cover a dirty region; each block gets a Painter configured with the correct
+// tile, screen origin, and clip.
+//
+// Tile pool uses an internal free-list stack for O(1) acquire / release.
+// Pool exhaustion (should not happen with correct sizing) logs a warning
+// and falls back to tile[0] — visual corruption is likely.
 
 class PFB {
 public:
@@ -26,12 +31,15 @@ public:
         mPoolSize  = poolSize;
         mPoolTiles = new Tile[poolSize];
         mPoolBufs  = new uint16_t[pixPerBlock * poolSize];
-        mPoolUsed  = new bool[poolSize]();
 
+        // Free-list stack — all tiles start available
+        mFreeList  = new int[poolSize];
         for (int i = 0; i < poolSize; i++) {
             mPoolTiles[i].attach(mPoolBufs + i * pixPerBlock,
                                   blockW, blockH);
+            mFreeList[i] = i;
         }
+        mFreeCount = poolSize;
 
         printf("PFB: %dx%d blocks, %dx%d grid, %d pool (%d bytes)\n",
                blockW, blockH, mCols, mRows,
@@ -42,7 +50,7 @@ public:
     ~PFB() {
         delete[] mPoolTiles;
         delete[] mPoolBufs;
-        delete[] mPoolUsed;
+        delete[] mFreeList;
     }
 
     int blockW() const { return mBlockW; }
@@ -50,14 +58,21 @@ public:
     int cols()   const { return mCols; }
     int rows()   const { return mRows; }
 
-    // Iterate the blocks covering a screen region. Calls `draw` for each block
-    // with a ready-to-use Painter and block metadata. Flushes each block.
+    // Iterate the blocks covering a screen region. For each block:
+    //   1. Acquire a tile from the pool
+    //   2. Configure the Painter (tile, screen origin, block-sized clip)
+    //   3. Call `draw(painter, bx, by, bw, bh)` — client draws the view tree
+    //   4. bitblt the tile to the display
+    //   5. Release the tile back to the pool
     template<typename Display, typename DrawFn>
     void drawRegion(const Region& region, Display& display, DrawFn&& draw) {
+        // Block range covering the region
         int c0 = region.x / mBlockW;
         int r0 = region.y / mBlockH;
         int c1 = (region.x + region.width  + mBlockW  - 1) / mBlockW;
         int r1 = (region.y + region.height + mBlockH - 1) / mBlockH;
+
+        // Clamp to screen
         if (c0 < 0)     c0 = 0;
         if (r0 < 0)     r0 = 0;
         if (c1 > mCols) c1 = mCols;
@@ -87,6 +102,28 @@ public:
     }
 
 private:
+    // ---- Tile pool (O(1) free-list stack) ----
+
+    Tile& acquireTile() {
+        if (mFreeCount > 0) {
+            return mPoolTiles[mFreeList[--mFreeCount]];
+        }
+        // Pool exhausted: this means max(concurrent blocks per dirty region)
+        // exceeds pool size. Increase pool or reduce dirty region granularity.
+        fprintf(stderr, "PFB: tile pool exhausted (pool=%d) — increase pool size\n",
+                mPoolSize);
+        return mPoolTiles[0]; // degraded fallback
+    }
+
+    void releaseTile(Tile& tile) {
+        int idx = (int)(&tile - mPoolTiles);
+        if (idx >= 0 && idx < mPoolSize) {
+            mFreeList[mFreeCount++] = idx;
+        }
+    }
+
+    // ---- Block size helpers ----
+
     int blockActualW(int col) const {
         int x = col * mBlockW;
         return (x + mBlockW <= mScreenW) ? mBlockW : mScreenW - x;
@@ -96,36 +133,18 @@ private:
         return (y + mBlockH <= mScreenH) ? mBlockH : mScreenH - y;
     }
 
-    Tile& acquireTile() {
-        for (int i = 0; i < mPoolSize; i++) {
-            if (!mPoolUsed[i]) {
-                mPoolUsed[i] = true;
-                return mPoolTiles[i];
-            }
-        }
-        return mPoolTiles[0]; // pool exhausted — shouldn't happen
-    }
+    int       mBlockW   = 0;
+    int       mBlockH   = 0;
+    int       mScreenW  = 0;
+    int       mScreenH  = 0;
+    int       mCols     = 0;
+    int       mRows     = 0;
+    int       mPoolSize = 0;
 
-    void releaseTile(Tile& tile) {
-        for (int i = 0; i < mPoolSize; i++) {
-            if (&mPoolTiles[i] == &tile) {
-                mPoolUsed[i] = false;
-                return;
-            }
-        }
-    }
-
-    int      mBlockW  = 0;
-    int      mBlockH  = 0;
-    int      mScreenW = 0;
-    int      mScreenH = 0;
-    int      mCols    = 0;
-    int      mRows    = 0;
-    int      mPoolSize = 0;
-
-    Tile*    mPoolTiles = nullptr;
-    uint16_t* mPoolBufs = nullptr;
-    bool*    mPoolUsed  = nullptr;
+    Tile*     mPoolTiles = nullptr;
+    uint16_t* mPoolBufs  = nullptr;
+    int*      mFreeList  = nullptr;
+    int       mFreeCount = 0;
 };
 
 } // namespace litho
