@@ -26,17 +26,40 @@ add_custom_command(
     COMMENT "Packing ${UI_DIR} → res_images.bin + headers"
 )
 
-# Step 2: embed bin as linkable object in .rodata (read-only).
-# Must run in the bin's directory so the symbol names are clean:
-#   _binary_res_images_bin_start / _end / _size
+# Step 2: create assembly source that .incbin's the binary.
+# Writing it at configure time avoids a separate generation step.
+# COFF uses .rdata, ELF uses .rodata for read-only data.
+set(RES_EMBED_S "${GEN_DIR}/res_images_embed.S")
+if(WIN32)
+    file(WRITE ${RES_EMBED_S}
+        "    .section .rdata,\"dr\"\n"
+        "    .globl _binary_res_images_bin_start\n"
+        "    .globl _binary_res_images_bin_end\n"
+        "    .balign 1\n"
+        "_binary_res_images_bin_start:\n"
+        "    .incbin \"res_images.bin\"\n"
+        "_binary_res_images_bin_end:\n"
+    )
+else()
+    file(WRITE ${RES_EMBED_S}
+        "    .section .rodata\n"
+        "    .globl _binary_res_images_bin_start\n"
+        "    .globl _binary_res_images_bin_end\n"
+        "    .balign 1\n"
+        "_binary_res_images_bin_start:\n"
+        "    .incbin \"res_images.bin\"\n"
+        "_binary_res_images_bin_end:\n"
+    )
+endif()
+
+# Step 3: assemble embed source → res_images.o.
+# Runs in GEN_DIR so that .incbin finds res_images.bin.
 add_custom_command(
     OUTPUT ${RES_OBJ}
-    COMMAND objcopy -I binary -O elf64-littleaarch64
-            --rename-section .data=.rodata,contents,alloc,load,readonly
-            res_images.bin res_images.o
-    DEPENDS ${RES_BIN}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/generated
-    COMMENT "Embedding res_images.bin → res_images.o (.rodata)"
+    COMMAND ${CMAKE_C_COMPILER} -c -o ${RES_OBJ} ${RES_EMBED_S}
+    DEPENDS ${RES_BIN} ${RES_EMBED_S}
+    WORKING_DIRECTORY ${GEN_DIR}
+    COMMENT "Assembling res_images_embed.S → res_images.o"
 )
 
 # Convenience target for manual re-pack
@@ -72,3 +95,13 @@ else()
 endif()
 
 add_subdirectory(tests/unit)
+
+# ---- viz_spin: record one full rotation as a frame sequence (dev tool) ----
+add_executable(viz_spin tests/viz_spin.cpp)
+target_link_libraries(viz_spin litho)
+
+add_executable(viz_clock tests/viz_clock.cpp)
+target_link_libraries(viz_clock litho)
+
+add_executable(viz_clockapp tests/viz_clockapp.cpp)
+target_link_libraries(viz_clockapp litho)

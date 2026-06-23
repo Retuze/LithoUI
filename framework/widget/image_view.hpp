@@ -24,29 +24,44 @@ public:
     RGB565 tintColor()  const { return mTint; }
 
     // ---- rotation ----
+    // Angle is stored in deci-degrees (1/10°) so a continuous animation can
+    // step in sub-degree increments (smooth sweep) instead of 1° jumps.
 
-    void setRotationAngle(int16_t degrees, int pivotX, int pivotY) {
-        if (mHasAngle && mAngleDeg == degrees &&
+    void setRotationAngleDeci(int deci, int pivotX, int pivotY) {
+        mPivotSet = true;
+        if (mHasAngle && mAngleDeci == deci &&
             mPivotX == pivotX && mPivotY == pivotY) {
             return;
         }
 
         Region old = screenBounds();
-        mAngleDeg = degrees;
-        mPivotX   = pivotX;
-        mPivotY   = pivotY;
-        mHasAngle = true;
+        mAngleDeci = deci;
+        mPivotX    = pivotX;
+        mPivotY    = pivotY;
+        mHasAngle  = true;
         invalidate();
         if (mDirtyList) mDirtyList->markDirty(old);
     }
-    // Default pivot = view center
+    // Default pivot = view center, unless a custom pivot was set before
+    // (so an animator driving the 1-arg form keeps the chosen pivot).
+    void setRotationAngleDeci(int deci) {
+        if (mPivotSet) setRotationAngleDeci(deci, mPivotX, mPivotY);
+        else           setRotationAngleDeci(deci, mWidth / 2, mHeight / 2);
+    }
+
+    // Whole-degree convenience wrappers.
+    void setRotationAngle(int16_t degrees, int pivotX, int pivotY) {
+        setRotationAngleDeci((int)degrees * 10, pivotX, pivotY);
+    }
     void setRotationAngle(int16_t degrees) {
-        setRotationAngle(degrees, mWidth / 2, mHeight / 2);
+        setRotationAngleDeci((int)degrees * 10);
     }
     bool    hasRotationAngle() const { return mHasAngle; }
-    int16_t rotationAngleDeg() const { return mAngleDeg; }
+    int16_t rotationAngleDeg() const { return (int16_t)(mAngleDeci / 10); }
+    int     rotationAngleDeci() const { return mAngleDeci; }
     int     rotationPivotX()   const { return mPivotX; }
     int     rotationPivotY()   const { return mPivotY; }
+
     void    clearRotation() {
         if (!mHasAngle) return;
 
@@ -66,19 +81,18 @@ public:
 
         // Rotate 4 corners around pivot, take bounding box
         int   w = mBounds.width, h = mBounds.height;
-        int16_t a = mAngleDeg % 360;
-        if (a < 0) a += 360;
+        int a = ((mAngleDeci % 3600) + 3600) % 3600;   // deci-degrees
 
         if (a == 0) return base;
 
         int32_t cosA, sinA;
         switch (a) {
-        case 90:  cosA = 0;      sinA = 65536;  break;
-        case 180: cosA = -65536; sinA = 0;      break;
-        case 270: cosA = 0;      sinA = -65536; break;
+        case 900:  cosA = 0;      sinA = 65536;  break;
+        case 1800: cosA = -65536; sinA = 0;      break;
+        case 2700: cosA = 0;      sinA = -65536; break;
         default:
-            cosA = (int32_t)cosDeg(a) << 1;
-            sinA = (int32_t)sinDeg(a) << 1;
+            cosA = (int32_t)cosDeci(a) << 1;
+            sinA = (int32_t)sinDeci(a) << 1;
             break;
         }
 
@@ -108,8 +122,8 @@ public:
             const RGB565*     tint  = mHasTint ? &mTint : nullptr;
 
             if (mHasAngle) {
-                p.drawImageRotated(src, e->format, e->width, e->height,
-                                   0, 0, mPivotX, mPivotY, mAngleDeg,
+                p.drawImageRotatedDeci(src, e->format, e->width, e->height,
+                                   0, 0, mPivotX, mPivotY, mAngleDeci,
                                    alpha, tint);
             } else {
                 p.drawImage(src, e->format, e->width, e->height, 0, 0,
@@ -127,9 +141,10 @@ private:
     RGB565    mTint     = {0};
     bool      mHasTint  = false;
     bool      mHasAngle = false;
-    int16_t   mAngleDeg = 0;
+    int       mAngleDeci = 0;
     int       mPivotX   = 0;
     int       mPivotY   = 0;
+    bool      mPivotSet = false;
 };
 
 } // namespace litho

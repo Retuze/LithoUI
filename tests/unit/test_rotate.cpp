@@ -354,8 +354,11 @@ struct RefModel {
     // For NN mode, returns the single nearest source pixel.
     uint16_t expectedPixel(int ox, int oy,
                            const uint16_t* src, int srcW, int srcH) const {
-        int32_t halfX = (cosA + sinA) / 2;
-        int32_t halfY = (cosA - sinA) / 2;
+        // Mirror painter.hpp: output-centre offset, then -½ px in source
+        // space so integer source coords hit pixel centres (frac 0 at
+        // lattice-aligned angles).
+        int32_t halfX = (cosA + sinA) / 2 - 32768;
+        int32_t halfY = (cosA - sinA) / 2 - 32768;
 
         int32_t baseSX = (int32_t)px * 65536
                        + (int32_t)minIX * cosA
@@ -399,7 +402,7 @@ struct RefModel {
         uint32_t w00 = (ifx * ify) >> 16;
         uint32_t w10 = ( fx * ify) >> 16;
         uint32_t w01 = (ifx *  fy) >> 16;
-        uint32_t w11 = ( fx *  fy) >> 16;
+        uint32_t w11 = 65536 - w00 - w10 - w01;   // remainder → Σw = 65536
 
         uint16_t p00=src[sy0*srcW+sx0], p10=src[sy0*srcW+sx1];
         uint16_t p01=src[sy1*srcW+sx0], p11=src[sy1*srcW+sx1];

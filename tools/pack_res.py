@@ -237,11 +237,24 @@ def write_headers(gen_dir, bundle_name, version, entries, sin_table):
             "static inline int16_t cosDeg(int deg) {\n"
             "    return sinDeg(deg + 90);\n"
             "}\n"
+            "// Sub-degree sin/cos in deci-degrees (1/10 deg) via linear\n"
+            "// interpolation of the per-degree table -- no extra memory,\n"
+            "// enough resolution for a smooth sweeping hand.\n"
+            "static inline int sinDeci(int dd) {\n"
+            "    const int16_t* t = resSinTable();\n"
+            "    dd = ((dd % 3600) + 3600) % 3600;\n"
+            "    int d = dd / 10, f = dd % 10;\n"
+            "    int s0 = t[d], s1 = t[(d + 1) % 360];\n"
+            "    return s0 + (s1 - s0) * f / 10;\n"
+            "}\n"
+            "static inline int cosDeci(int dd) { return sinDeci(dd + 900); }\n"
         )
     else:
         sin_acc = (
             "\n"
             "static inline const int16_t* resSinTable() { return 0; }\n"
+            "static inline int sinDeci(int dd) { (void)dd; return 0; }\n"
+            "static inline int cosDeci(int dd) { (void)dd; return 0; }\n"
         )
 
     h_path = gen_dir / "res_images.h"

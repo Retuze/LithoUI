@@ -200,10 +200,11 @@ public:
         }
     }
 
-    // ── rotation scratch buffer ───────────────────────────────────
-
     // ── drawImageRotated (all rotation, incl. 90° steps) ──────────
-
+    //
+    // Degree entry point (kept for callers using whole degrees). Delegates
+    // to the deci-degree core; integer degrees give identical results
+    // because sinDeci(deg*10) == sinDeg(deg) (no interpolation at f=0).
     void drawImageRotated(const void* src, int fmt,
                           int srcW, int srcH,
                           int dx, int dy,
@@ -212,24 +213,37 @@ public:
                           const uint8_t* mask   = nullptr,
                           const RGB565* tint   = nullptr,
                           Tile* rotBuffer      = nullptr) {
+        drawImageRotatedDeci(src, fmt, srcW, srcH, dx, dy, rotCx, rotCy,
+                             (int)angleDeg * 10, mask, tint, rotBuffer);
+    }
 
-        if (!resSinTable() && angleDeg % 90 != 0) return;
+    // Deci-degree core: angle in 1/10°, so a sweeping hand can move in
+    // sub-degree steps (smooth) instead of 1° jumps.
+    void drawImageRotatedDeci(const void* src, int fmt,
+                          int srcW, int srcH,
+                          int dx, int dy,
+                          int rotCx, int rotCy,
+                          int angleDeci,
+                          const uint8_t* mask   = nullptr,
+                          const RGB565* tint   = nullptr,
+                          Tile* rotBuffer      = nullptr) {
 
-        angleDeg = angleDeg % 360;
-        if (angleDeg < 0) angleDeg += 360;
+        if (!resSinTable() && angleDeci % 900 != 0) return;
 
-        // ── Q16 sin/cos: 90° multiples are exact ──
+        angleDeci = ((angleDeci % 3600) + 3600) % 3600;
+
+        // ── Q16 sin/cos: 90° multiples (0/900/1800/2700 deci) are exact ──
         int32_t cosA, sinA;
         int outW, outH;
         bool useBilinear;  // bilinear only for arbitrary angles
-        switch (angleDeg) {
-        case 0:   cosA = 65536;  sinA = 0;       outW = srcW; outH = srcH; useBilinear = false; break;
-        case 90:  cosA = 0;      sinA = 65536;   outW = srcH; outH = srcW; useBilinear = false; break;
-        case 180: cosA = -65536; sinA = 0;       outW = srcW; outH = srcH; useBilinear = false; break;
-        case 270: cosA = 0;      sinA = -65536;  outW = srcH; outH = srcW; useBilinear = false; break;
+        switch (angleDeci) {
+        case 0:    cosA = 65536;  sinA = 0;       outW = srcW; outH = srcH; useBilinear = false; break;
+        case 900:  cosA = 0;      sinA = 65536;   outW = srcH; outH = srcW; useBilinear = false; break;
+        case 1800: cosA = -65536; sinA = 0;       outW = srcW; outH = srcH; useBilinear = false; break;
+        case 2700: cosA = 0;      sinA = -65536;  outW = srcH; outH = srcW; useBilinear = false; break;
         default:
-            cosA = (int32_t)cosDeg(angleDeg) << 1;
-            sinA = (int32_t)sinDeg(angleDeg) << 1;
+            cosA = (int32_t)cosDeci(angleDeci) << 1;
+            sinA = (int32_t)sinDeci(angleDeci) << 1;
             outW = outH = 0; // computed from bounding box below
             useBilinear = true;
             break;
@@ -247,7 +261,7 @@ public:
             if (rx < minX) minX = rx; if (ry < minY) minY = ry;
             if (rx > maxX) maxX = rx; if (ry > maxY) maxY = ry;
         }
-        if (angleDeg % 90 != 0) {
+        if (angleDeci % 900 != 0) {
             outW = maxX - minX;
             outH = maxY - minY;
         }
@@ -259,15 +273,26 @@ public:
         int32_t stepSY_dy =  cosA;
 
         // ── half-pixel offset ────────────────────────────────────────
-        // Output pixel (ox,oy) occupies [ox,ox+1)×[oy,oy+1); its centre
-        // is at (ox+0.5, oy+0.5).  The bounding box is built from image
-        // corners (not pixel centres), so we must shift the scan origin
-        // by +½ pixel (in output space) to sample source pixel centres.
+        // Two independent ½-pixel corrections fold into baseSX/baseSY:
         //
-        // R⁻¹(½,½) in Q16:  (½·cos + ½·sin,  -½·sin + ½·cos)
-        // Since cosA/sinA are already Q16, ½·v = v / 2:
-        int32_t const halfX = (cosA + sinA) / 2;
-        int32_t const halfY = (cosA - sinA) / 2;
+        //  (1) OUTPUT side: pixel (ox,oy) occupies [ox,ox+1)×[oy,oy+1);
+        //      its centre is at (ox+0.5, oy+0.5).  The bounding box is
+        //      built from image corners (not pixel centres), so we shift
+        //      the scan origin by +½ px in output space and map it back:
+        //        R⁻¹(½,½) in Q16 = (½·cos + ½·sin, -½·sin + ½·cos).
+        //
+        //  (2) SOURCE side: the fetch treats an integer source coordinate
+        //      as a pixel CENTRE (sx = curSX>>16, frac = curSX&0xFFFF is
+        //      the weight toward sx+1).  The mapping above lands on the
+        //      corner grid, so we subtract ½ px in source space to hit
+        //      centres.  Without this the sampler is biased by +½ px and
+        //      lattice-aligned angles (0/90/180/270°) come out at frac
+        //      0.5 — blurred and shifted vs their crisp fast-path — which
+        //      makes a continuously-rotating image flicker/jump every 90°.
+        //
+        // Since cosA/sinA are already Q16, ½·v = v / 2 and ½ px = 32768:
+        int32_t const halfX = (cosA + sinA) / 2 - 32768;
+        int32_t const halfY = (cosA - sinA) / 2 - 32768;
 
         // Row-start for output pixel (0,0) → source Q16
         // source = pivot + R⁻¹( (minX+½, minY+½) )
@@ -344,7 +369,13 @@ public:
                 uint32_t w00 = (ifx * ify) >> 16;
                 uint32_t w10 = ( fx * ify) >> 16;
                 uint32_t w01 = (ifx *  fy) >> 16;
-                uint32_t w11 = ( fx *  fy) >> 16;
+                // w11 as the remainder so the four weights partition unity
+                // exactly (Σw = 65536).  Truncating each (f·f)>>16 lets the
+                // sum fall below 65536, which drops a fully-opaque pixel's
+                // coverage to 254 → the final composite then blends in 1/255
+                // of the background and dims every interpolated pixel by
+                // ~1 LSB/channel (≈6 luma) at most angles.
+                uint32_t w11 = 65536 - w00 - w10 - w01;
 
                 uint16_t p00, p10, p01, p11;
                 uint8_t  a00=255, a10=255, a01=255, a11=255;
@@ -370,20 +401,41 @@ public:
                 default: p00=p10=p01=p11=0; break;
                 }
 
-                // blend R/G/B channels
+                // ── premultiplied-alpha blend ───────────────────
+                // Weight each texel's RGB by its OWN coverage (wᵢ·aᵢ),
+                // then normalise by Σwᵢ·aᵢ.  A transparent texel (aᵢ=0)
+                // contributes nothing, so its (usually black) RGB can no
+                // longer darken the edge — this removes the dark fringe
+                // that made off-axis frames dimmer and produced a
+                // brightness flicker every 90° during a spin.  For opaque
+                // pixels (aᵢ=255) the aᵢ factor cancels and this is exactly
+                // the previous positional bilinear (bit-identical).
                 if ((w00|w10|w01|w11) != 0) {
-                    uint32_t r0=(p00>>11)&0x1F,g0=(p00>>5)&0x3F,b0=p00&0x1F;
-                    uint32_t r1=(p10>>11)&0x1F,g1=(p10>>5)&0x3F,b1=p10&0x1F;
-                    uint32_t r2=(p01>>11)&0x1F,g2=(p01>>5)&0x3F,b2=p01&0x1F;
-                    uint32_t r3=(p11>>11)&0x1F,g3=(p11>>5)&0x3F,b3=p11&0x1F;
-                    uint32_t rb=(r0*w00+r1*w10+r2*w01+r3*w11)>>16;
-                    uint32_t gb=(g0*w00+g1*w10+g2*w01+g3*w11)>>16;
-                    uint32_t bb=(b0*w00+b1*w10+b2*w01+b3*w11)>>16;
-                    if(rb>0x1F)rb=0x1F; if(gb>0x3F)gb=0x3F; if(bb>0x1F)bb=0x1F;
-                    s = (uint16_t)((rb<<11)|(gb<<5)|bb);
+                    uint32_t aw00=w00*a00, aw10=w10*a10,
+                             aw01=w01*a01, aw11=w11*a11;
+                    uint32_t awSum = aw00+aw10+aw01+aw11;   // Σ wᵢ·aᵢ
+                    if (awSum != 0) {
+                        uint32_t r0=(p00>>11)&0x1F,g0=(p00>>5)&0x3F,b0=p00&0x1F;
+                        uint32_t r1=(p10>>11)&0x1F,g1=(p10>>5)&0x3F,b1=p10&0x1F;
+                        uint32_t r2=(p01>>11)&0x1F,g2=(p01>>5)&0x3F,b2=p01&0x1F;
+                        uint32_t r3=(p11>>11)&0x1F,g3=(p11>>5)&0x3F,b3=p11&0x1F;
+                        // Round-to-nearest (+½·Σw) instead of truncating:
+                        // truncation loses ~½ LSB/channel on every
+                        // interpolated pixel, systematically dimming the
+                        // whole body at off-axis angles vs the crisp
+                        // (un-interpolated) lattice-aligned frames.
+                        uint32_t half = awSum >> 1;
+                        uint32_t rb=(r0*aw00+r1*aw10+r2*aw01+r3*aw11+half)/awSum;
+                        uint32_t gb=(g0*aw00+g1*aw10+g2*aw01+g3*aw11+half)/awSum;
+                        uint32_t bb=(b0*aw00+b1*aw10+b2*aw01+b3*aw11+half)/awSum;
+                        if(rb>0x1F)rb=0x1F; if(gb>0x3F)gb=0x3F; if(bb>0x1F)bb=0x1F;
+                        s = (uint16_t)((rb<<11)|(gb<<5)|bb);
+                    } else {
+                        s = 0;   // fully transparent → colour unused (pixelA=0)
+                    }
 
                     if (fmt==2 || (mask && fmt==1)) {
-                        pixelA = (a00*w00+a10*w10+a01*w01+a11*w11)>>16;
+                        pixelA = awSum>>16;   // (Σ wᵢ·aᵢ)>>16, as before
                         if(pixelA>255) pixelA=255;
                     }
                 } else {

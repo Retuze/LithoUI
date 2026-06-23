@@ -33,6 +33,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
+#include <ctime>
 
 using namespace litho;
 
@@ -219,6 +221,134 @@ private:
     ObjectAnimator mRotAnim;
 };
 
+// -------- ClockActivity: analog clock with sweeping hands --------
+
+static const int kClockCX = 320, kClockCY = 240, kFaceR = 150;
+
+// Face: dark dial, rim, 12 ticks, drawn relative to view origin.
+class ClockFaceView : public View {
+public:
+    void onDraw(Painter& p) override {
+        int cx = mBounds.width / 2, cy = mBounds.height / 2;
+        RGB565 face = RGB565::fromRGB(34, 38, 52);
+        RGB565 rim  = RGB565::fromRGB(90, 100, 130);
+        RGB565 tick = RGB565::fromRGB(210, 215, 230);
+
+        // filled dial (scanline circle) + rim
+        for (int dy = -kFaceR; dy <= kFaceR; dy++) {
+            int half = (int)(sqrt((double)(kFaceR*kFaceR - dy*dy)) + 0.5);
+            p.fillRect(cx - half, cy + dy, 2*half, 1, face);
+        }
+        for (int dy = -kFaceR; dy <= kFaceR; dy++) {
+            int ho = (int)(sqrt((double)(kFaceR*kFaceR - dy*dy)) + 0.5);
+            int hi = 0;
+            int inr = kFaceR - 4;
+            if (dy > -inr && dy < inr) hi = (int)(sqrt((double)(inr*inr - dy*dy)) + 0.5);
+            p.fillRect(cx - ho, cy + dy, ho - hi, 1, rim);
+            p.fillRect(cx + hi, cy + dy, ho - hi, 1, rim);
+        }
+        // 12 hour ticks
+        for (int k = 0; k < 12; k++) {
+            double a = k * 3.14159265 / 6.0;
+            int tx = cx + (int)(132 * sin(a));
+            int ty = cy - (int)(132 * cos(a));
+            int s = (k % 3 == 0) ? 5 : 3;
+            p.fillRect(tx - s, ty - s, 2*s, 2*s, tick);
+        }
+    }
+};
+
+// Center hub is the black dot baked into the hand sprites — no extra hub.
+
+class ClockActivity : public Activity {
+public:
+    void onCreate(Bundle& state) override {
+        (void)state;
+        printf("ClockActivity::onCreate\n");
+
+        auto* root = new ViewGroup();
+        root->bounds() = {0, 0, 640, 480};
+        setContentView(root);
+
+        auto* bg = new ColorView(RGB565::fromRGB(18, 20, 26));
+        bg->bounds() = {0, 0, 640, 480};
+        root->addView(bg);
+
+        auto* face = new ClockFaceView();
+        face->bounds() = {(int16_t)(kClockCX - kFaceR - 6),
+                          (int16_t)(kClockCY - kFaceR - 6),
+                          (int16_t)(2*(kFaceR + 6)), (int16_t)(2*(kFaceR + 6))};
+        root->addView(face);
+
+        // Hands: view == image size, pivoted on the black dot baked into
+        // each sprite (sec ≈ (7,108), min ≈ (8,126)), placed so that dot
+        // lands on the clock centre. View==image means the dirty AABB and
+        // the painter agree, so the pivot stays pinned at every angle.
+        mMin = makeHand(root, IMG_R_MIN, 8, 126, nullptr);
+        RGB565 red = RGB565::fromRGB(220, 70, 70);
+        mSec = makeHand(root, IMG_R_SEC, 7, 108, &red);
+
+        // Initial angles from wall-clock time so it shows the real time.
+        time_t t = time(nullptr);
+        struct tm lt = *localtime(&t);
+        mSec0 = lt.tm_sec * 6;
+        mMin0 = (int)((lt.tm_min + lt.tm_sec / 60.0) * 6.0);
+        if (mMin) mMin->setRotationAngle((int16_t)mMin0, 8, 126);
+        if (mSec) mSec->setRotationAngle((int16_t)mSec0, 7, 108);
+        printf("clock start %02d:%02d:%02d (min=%d° sec=%d°)\n",
+               lt.tm_hour, lt.tm_min, lt.tm_sec, mMin0, mSec0);
+    }
+
+    void onResume() override {
+        Activity::onResume();
+        auto& am = manager().windowManager().animationManager();
+
+        // Second hand: one revolution per 60 s, forever. Driven in
+        // deci-degrees (×10) so the sweep is sub-degree smooth.
+        if (mSec) {
+            mSecAnim.setTarget(mSec)
+                .setFloatValues((float)mSec0, (float)mSec0 + 360.f)
+                .setSetter([](void* t, float v){ ((ImageView*)t)->setRotationAngleDeci((int)(v*10.f + 0.5f)); })
+                .setDuration(60000)
+                .setInterpolator(Interpolator::LINEAR);
+            mSecAnim.animator().setRepeatCount(-1);
+            mSecAnim.start();
+            am.addAnimator(&mSecAnim.animator());
+        }
+        // Minute hand: one revolution per 60 min.
+        if (mMin) {
+            mMinAnim.setTarget(mMin)
+                .setFloatValues((float)mMin0, (float)mMin0 + 360.f)
+                .setSetter([](void* t, float v){ ((ImageView*)t)->setRotationAngleDeci((int)(v*10.f + 0.5f)); })
+                .setDuration(3600000)
+                .setInterpolator(Interpolator::LINEAR);
+            mMinAnim.animator().setRepeatCount(-1);
+            mMinAnim.start();
+            am.addAnimator(&mMinAnim.animator());
+        }
+    }
+
+private:
+    ImageView* makeHand(ViewGroup* root, ImageId id, int pivotX, int pivotY,
+                        const RGB565* tint) {
+        const ImageEntry* e = imageEntry(id);
+        auto* v = new ImageView(e->width, e->height);   // view == image size
+        // Place so the hand's own pivot (the black dot baked into the art)
+        // lands on the clock centre.
+        v->bounds() = {(int16_t)(kClockCX - pivotX), (int16_t)(kClockCY - pivotY),
+                       (int16_t)e->width, (int16_t)e->height};
+        v->setImageId(id);
+        if (tint) v->setTintColor(*tint);
+        root->addView(v);
+        return v;
+    }
+
+    ImageView* mMin = nullptr;
+    ImageView* mSec = nullptr;
+    int mMin0 = 0, mSec0 = 0;
+    ObjectAnimator mSecAnim, mMinAnim;
+};
+
 // -------- entry --------
 
 int main() {
@@ -243,16 +373,16 @@ int main() {
 #endif
 
     WindowManager wm(display, input, tick);
-    wm.initPFB(128, 4, 2);
+    wm.initPFB(128, 128, 2);
 
     ActivityManager am(wm);
     am.registerActivity<GalleryActivity>("GalleryActivity");
     am.registerActivity<DetailActivity>("DetailActivity");
+    am.registerActivity<ClockActivity>("ClockActivity");
 
-    // Start directly on the feature showcase with the first icon
+    // Start on the analog clock
     Intent startIntent;
-    startIntent.target = "DetailActivity";
-    startIntent.putInt("index", 0);
+    startIntent.target = "ClockActivity";
     am.startActivity(startIntent);
 
     printf("LithoUI — running (%d images)\n", IMG_COUNT);

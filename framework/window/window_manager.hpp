@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cassert>
+#include <cstdio>   // printf for FPS stats
 
 namespace litho {
 
@@ -59,6 +60,7 @@ public:
         mAnimMgr.tick(frameTimeMs);
 
         // Render each dirty region through PFB
+        uint32_t renderStart = mTick.tickMs();
         for (int ri = 0; ri < mDirtyList.count(); ri++) {
             const Region& r = mDirtyList.regions()[ri];
 
@@ -72,7 +74,22 @@ public:
 
         bool drew = mDirtyList.count() > 0;
         mDirtyList.clear();
-        if (drew) mDisplay.flush();
+        if (drew) {
+            mDisplay.flush();
+            // ── FPS / render-time stats (printed once per second) ──
+            mFpsRenderMs += (mTick.tickMs() - renderStart);
+            mFpsFrames++;
+            if (mFpsT0 == 0) mFpsT0 = frameTimeMs;
+            uint32_t elapsed = frameTimeMs - mFpsT0;
+            if (elapsed >= 1000) {
+                double fps   = mFpsFrames * 1000.0 / elapsed;
+                double avgMs = mFpsFrames ? (double)mFpsRenderMs / mFpsFrames : 0.0;
+                printf("FPS: %.1f  (%d frames in %u ms, avg %.1f ms/frame render)\n",
+                       fps, mFpsFrames, elapsed, avgMs);
+                fflush(stdout);
+                mFpsT0 = frameTimeMs; mFpsFrames = 0; mFpsRenderMs = 0;
+            }
+        }
         return true;
     }
 
@@ -101,6 +118,11 @@ private:
     Window*   mWindows[4] = {};
     uint16_t  mCount      = 0;
     bool      mRunning    = false;
+
+    // FPS / render-time stats (see runOnce)
+    uint32_t  mFpsT0       = 0;
+    uint32_t  mFpsFrames   = 0;
+    uint32_t  mFpsRenderMs = 0;
 };
 
 } // namespace litho
